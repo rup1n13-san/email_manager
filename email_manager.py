@@ -508,16 +508,30 @@ Respond ONLY with JSON:
         self.last_check = datetime.now()
 
 def main():
+    import os
+    
+    # Check if running in GitHub Actions
+    is_github_actions = os.getenv('GITHUB_ACTIONS') == 'true'
+    
     ai_status = "ENABLED" if USE_AI_CLASSIFICATION and GROQ_API_KEY else "DISABLED"
     print("[START] Email Manager v2")
     print(f"        Check interval: every {CHECK_INTERVAL_HOURS} hours")
     print(f"        AI Classification: {ai_status}")
+    
+    if is_github_actions:
+        print("        Mode: GitHub Actions (one-shot)")
     
     manager = EmailManager()
     
     # Première vérification immédiate
     manager.check_emails()
     
+    # If GitHub Actions, exit after one check
+    if is_github_actions:
+        print("\n[INFO] GitHub Actions mode - exiting after check")
+        return
+    
+    # Otherwise, run continuously
     # Planifier les vérifications périodiques
     schedule.every(CHECK_INTERVAL_HOURS).hours.do(manager.check_emails)
     
