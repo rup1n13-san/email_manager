@@ -1,6 +1,10 @@
 # Configuration files with secrets
 config.py
 
+# Agent tracking files (never commit)
+backend/.md/
+backend/tasks/*.md
+
 # Python
 __pycache__/
 *.py[cod]
