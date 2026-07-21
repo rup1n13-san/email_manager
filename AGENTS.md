@@ -12,8 +12,8 @@ Propose better alternatives. Validate before coding.
 ## Bootstrap (every session)
 
 1. Read `docs/PRD.md` — system requirements and architecture
-2. Read `backend/.md/project_status.md` — where are we?
-3. Check `backend/tasks/todo.md` — today's task scope
+2. Read `.md/project_status.md` — where are we?
+3. Check `tasks/todo.md` — today's task scope
 4. Load only files relevant to today's scope
 
 ---
@@ -153,13 +153,13 @@ Verdict: ready to merge? Yes / No / With conditions.
 After every task:
 
 1. Anything fail or need multiple attempts?
-   → Append to `backend/tasks/lessons.md`:
+   → Append to `tasks/lessons.md`:
    `[YYYY-MM-DD] | what went wrong | rule to avoid it`
 
-2. Is `backend/.md/project_status.md` outdated?
+2. Is `.md/project_status.md` outdated?
    → Update it
 
 3. Significant architectural decision made?
-   → Write it in `backend/.md/decisions/<topic>.md`
+   → Write it in `.md/decisions/<topic>.md`
 
 Skipping this = lost knowledge.
