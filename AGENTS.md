@@ -52,6 +52,7 @@ Propose better alternatives. Validate before coding.
 | **AI fallback preserved** | Groq unavailable → keyword-based classification. The v1 `classify_basic()` logic must exist in v2. Never remove it. |
 | **No `Co-authored-by` in commits** | Never. |
 | **No `feature`, `add`, `update`, `wip` commit types** | Only `feat`, `fix`, `refactor`, `chore`, `docs` |
+| **PrismaClient import path** | Never `import { PrismaClient } from '@prisma/client'` — fails in ESM. Always import from the generated path: `import { PrismaClient } from '../generated/prisma/client.js'` (or relative from current file). Schema generator uses `provider = "prisma-client"` with `output = "../src/generated/prisma"`. |
 
 ---
 
@@ -62,6 +63,7 @@ backend/src/
   common/       — decorators, guards, interceptors, filters, helpers, shared DTOs
   config/       — per-concern config files (env validation, etc.)
   core/         — business domain modules (telegram, oauth, gmail, ai, user, connection, scheduler)
+  generated/    — Prisma-generated client (gitignored, regenerated on prisma generate)
   prisma/       — PrismaModule, PrismaService, extensions
 ```
 

@@ -18,6 +18,7 @@ dist/
 # Prisma
 *.db
 *.db-journal
+backend/src/generated/
 
 # Logs
 *.log
