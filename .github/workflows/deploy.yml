@@ -41,7 +41,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: backend/package-lock.json
-      - run: npm install
+      - run: npm ci
       - run: npx prisma generate
       - run: npx tsc --noEmit
       - run: npm run lint --if-present
