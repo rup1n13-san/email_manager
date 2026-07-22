@@ -1,0 +1,40 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String           @id @default(cuid())
+  telegramChatId String           @unique
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  connections    Connection[]
+  preference     EmailPreference?
+}
+
+model Connection {
+  id             String   @id @default(cuid())
+  userId         String
+  provider       String   @default("google")
+  providerUserId String
+  accessToken    String
+  refreshToken   String
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model EmailPreference {
+  id                  String  @id @default(cuid())
+  userId              String  @unique
+  checkIntervalHours  Int     @default(4)
+  defaultInbox        String  @default("PRIMARY")
+  aiEnabled           Boolean @default(true)
+  aiModel             String  @default("groq")
+  notificationStyle   String  @default("detailed")
+  user                User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
