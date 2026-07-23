@@ -9,7 +9,8 @@ export class EncryptionHelper {
     const raw = process.env.ENCRYPTION_KEY;
     if (!raw || raw.length !== 64 || !/^[0-9a-f]{64}$/i.test(raw)) {
       throw new Error(
-        'ENCRYPTION_KEY must be a 64-character hex string (32 bytes)',
+        'ENCRYPTION_KEY must be a 64-character hex string (32 bytes). ' +
+          'Generate with: openssl rand -hex 32',
       );
     }
     this.key = Buffer.from(raw, 'hex');

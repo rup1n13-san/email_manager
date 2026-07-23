@@ -10,10 +10,15 @@ import { AiModule } from './core/ai/ai.module.js';
 import { UserModule } from './core/user/user.module.js';
 import { ConnectionModule } from './core/connection/connection.module.js';
 import { SchedulerModule } from './core/scheduler/scheduler.module.js';
+import { validateEnv } from './config/env.js';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: '.env',
+      validate: validateEnv,
+    }),
     ScheduleModule.forRoot(),
     PrismaModule,
     TelegramModule,
