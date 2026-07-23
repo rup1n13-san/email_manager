@@ -7,7 +7,7 @@ export class PrismaService extends PrismaClient {
   constructor() {
     let connectionString = process.env.DATABASE_URL as string;
     if (connectionString && !connectionString.includes('sslmode')) {
-      connectionString += '?sslmode=require';
+      connectionString += '?sslmode=no-verify';
     }
     const adapter = new PrismaPg({ connectionString });
     super({ adapter });
