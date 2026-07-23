@@ -1,7 +1,7 @@
 import { Controller, Post, Body, UseGuards } from '@nestjs/common';
 import { TelegramWebhookGuard } from '../../common/guards/telegram/telegram.guard.js';
 import { TelegramService } from './telegram.service.js';
-import type { TelegramUpdate } from './dto/telegram-update.dto.js';
+import { TelegramUpdate } from './dto/telegram-update.dto.js';
 
 @Controller('webhook')
 export class TelegramController {
