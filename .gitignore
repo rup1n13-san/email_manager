@@ -1,6 +1,6 @@
 # Secrets (never commit)
 .env
-.env.*
+.env.production
 config.py
 
 # Agent tracking files (never commit)
