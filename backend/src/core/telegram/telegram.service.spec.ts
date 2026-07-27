@@ -61,9 +61,15 @@ async function createService(): Promise<{
 
 describe('TelegramService', () => {
   let originalToken: string | undefined;
+  let originalClientId: string | undefined;
+  let originalRedirectUri: string | undefined;
 
   beforeAll(() => {
     originalToken = process.env.TELEGRAM_BOT_TOKEN;
+    originalClientId = process.env.GOOGLE_CLIENT_ID;
+    originalRedirectUri = process.env.GOOGLE_REDIRECT_URI;
+    process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
+    process.env.GOOGLE_REDIRECT_URI = 'https://example.com/callback';
   });
 
   beforeEach(() => {
@@ -73,6 +79,8 @@ describe('TelegramService', () => {
 
   afterAll(() => {
     process.env.TELEGRAM_BOT_TOKEN = originalToken;
+    process.env.GOOGLE_CLIENT_ID = originalClientId;
+    process.env.GOOGLE_REDIRECT_URI = originalRedirectUri;
   });
 
   describe('sendMessage', () => {
@@ -294,6 +302,68 @@ describe('TelegramService', () => {
           '98765',
           expect.stringContaining('I can help you manage your Gmail'),
         );
+      });
+    });
+
+    describe('/connect', () => {
+      it('sends the Google OAuth URL to the user', async () => {
+        const { service } = await createService();
+        const sendSpy = jest
+          .spyOn(service, 'sendMessage')
+          .mockResolvedValue({ ok: true });
+
+        const result = await service.processUpdate(
+          makeUpdate({
+            text: '/connect',
+            entities: [{ type: 'bot_command', offset: 0, length: 8 }],
+          }),
+        );
+
+        expect(result).toEqual({ ok: true });
+        expect(sendSpy).toHaveBeenCalledWith(
+          '98765',
+          expect.stringContaining('accounts.google.com'),
+        );
+      });
+
+      it('URL includes the chatId as state parameter', async () => {
+        const { service } = await createService();
+        const sendSpy = jest
+          .spyOn(service, 'sendMessage')
+          .mockResolvedValue({ ok: true });
+
+        await service.processUpdate(
+          makeUpdate({
+            text: '/connect',
+            entities: [{ type: 'bot_command', offset: 0, length: 8 }],
+          }),
+        );
+
+        const message = sendSpy.mock.calls[0][1];
+        expect(message).toContain('state=98765');
+      });
+
+      it('sends error message when OAuth config is missing', async () => {
+        delete process.env.GOOGLE_CLIENT_ID;
+        const { service } = await createService();
+        const sendSpy = jest
+          .spyOn(service, 'sendMessage')
+          .mockResolvedValue({ ok: true });
+
+        const result = await service.processUpdate(
+          makeUpdate({
+            text: '/connect',
+            entities: [{ type: 'bot_command', offset: 0, length: 8 }],
+          }),
+        );
+
+        expect(result).toEqual({ ok: true });
+        expect(sendSpy).toHaveBeenCalledWith(
+          '98765',
+          expect.stringContaining('not configured'),
+        );
+        process.env.GOOGLE_CLIENT_ID =
+          'test-client-id.apps.googleusercontent.com';
       });
     });
 
