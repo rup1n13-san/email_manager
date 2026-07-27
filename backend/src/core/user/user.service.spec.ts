@@ -80,7 +80,7 @@ describe('UserService', () => {
 
   describe('create', () => {
     it('inserts and returns a new user', async () => {
-      const newUser = { ...mockUser, id: 'user-2', telegramChatId: '67890' };
+      const newUser = { ...mockUser, telegramChatId: '67890' };
       mockPrisma.user.create.mockResolvedValue(newUser);
 
       const result = await service.create('67890');
