@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { UserService } from '../user/user.service.js';
 import { TelegramUpdate } from './dto/telegram-update.dto.js';
+import { buildGoogleOAuthUrl } from '../../common/helpers/oauth-url.js';
 
 export interface SendMessageOptions {
   parseMode?: 'MarkdownV2' | 'HTML';
@@ -30,6 +31,8 @@ export class TelegramService {
         return this.handleStart(chatId, message.from);
       case '/help':
         return this.handleHelp(chatId);
+      case '/connect':
+        return this.handleConnect(chatId);
       default:
         await this.sendMessage(chatId, `Unknown command: ${command}`);
         return { ok: true };
@@ -62,6 +65,23 @@ export class TelegramService {
         `/summary — Get AI summary of new emails\n` +
         `/help — Show this message again`,
     );
+    return { ok: true };
+  }
+
+  private async handleConnect(chatId: string): Promise<{ ok: boolean }> {
+    try {
+      const url = buildGoogleOAuthUrl(chatId);
+      await this.sendMessage(
+        chatId,
+        `Click to connect your Gmail account:\n\n${url}\n\n` +
+          `After authorizing, you'll receive a confirmation message here.`,
+      );
+    } catch {
+      await this.sendMessage(
+        chatId,
+        'Google OAuth is not configured. Contact the bot admin.',
+      );
+    }
     return { ok: true };
   }
 
