@@ -1,6 +1,9 @@
 import 'dotenv/config';
 import { defineConfig } from 'prisma/config';
 
+const rawUrl = process.env.DATABASE_URL ?? '';
+const databaseUrl = rawUrl.includes('sslmode') ? rawUrl : `${rawUrl}?sslmode=no-verify`;
+
 export default defineConfig({
   schema: 'prisma/schema.prisma',
   migrations: {
@@ -8,6 +11,6 @@ export default defineConfig({
     seed: 'npx tsx prisma/seed.ts',
   },
   datasource: {
-    url: process.env.DATABASE_URL,
+    url: databaseUrl,
   },
 });
