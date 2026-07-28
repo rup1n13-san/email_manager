@@ -8,7 +8,7 @@ datasource db {
 }
 
 model User {
-  id             String           @id @default(cuid())
+  id             String           @id @default(ulid())
   telegramChatId String           @unique
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
@@ -17,7 +17,7 @@ model User {
 }
 
 model Connection {
-  id             String   @id @default(cuid())
+  id             String   @id @default(ulid())
   userId         String
   provider       String   @default("google")
   providerUserId String
@@ -25,16 +25,19 @@ model Connection {
   refreshToken   String
   expiresAt      DateTime
   createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
   user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
 }
 
 model EmailPreference {
-  id                  String  @id @default(cuid())
-  userId              String  @unique
-  checkIntervalHours  Int     @default(4)
-  defaultInbox        String  @default("PRIMARY")
-  aiEnabled           Boolean @default(true)
-  aiModel             String  @default("groq")
-  notificationStyle   String  @default("detailed")
-  user                User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                 String  @id @default(ulid())
+  userId             String  @unique
+  checkIntervalHours Int     @default(4)
+  defaultInbox       String  @default("PRIMARY")
+  aiEnabled          Boolean @default(true)
+  aiModel            String  @default("groq")
+  notificationStyle  String  @default("detailed")
+  user               User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
