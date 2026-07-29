@@ -32,10 +32,22 @@ if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$APP_URL" ] || [ -z "$TELEGRAM_WEBHOOK_
 fi
 
 URL="${APP_URL}/api/webhook"
+
+echo "Deleting existing webhook..."
+RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/deleteWebhook")
+echo "Deletion Result: $RESPONSE"
+echo "Sleeping for 10s to ensure webhook is deleted..."
+sleep 10
+
+echo "Checking webhook info..."
+curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo" | jq .
+
 echo "Setting webhook to: $URL"
 RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
   -d "url=$URL" \
   -d "secret_token=$TELEGRAM_WEBHOOK_SECRET")
 
 echo "$RESPONSE" | head -c 200
-echo
+
+echo "Final webhook info..."
+curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo" | jq .
