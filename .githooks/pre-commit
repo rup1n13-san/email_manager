@@ -1,0 +1,13 @@
+#!/bin/sh
+# Blocks commits that leave backend/package-lock.json out of sync with backend/package.json.
+# Enable once with: git config core.hooksPath .githooks
+
+if git diff --cached --name-only | grep -qE '^backend/package(-lock)?\.json$'; then
+  echo "package.json or package-lock.json changed — verifying lockfile is in sync (npm ci --dry-run)..."
+  if ! (cd backend && npm ci --dry-run >/tmp/npm-ci-dry-run.log 2>&1); then
+    echo "Lockfile is out of sync with package.json. Run 'npm install' in backend/ and commit the result."
+    echo
+    cat /tmp/npm-ci-dry-run.log
+    exit 1
+  fi
+fi
