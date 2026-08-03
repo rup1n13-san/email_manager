@@ -3,10 +3,6 @@
 .env.production
 config.py
 
-# Agent tracking files (never commit)
-.md/
-tasks/*.md
-
 # Node.js
 node_modules/
 npm-debug.log*
