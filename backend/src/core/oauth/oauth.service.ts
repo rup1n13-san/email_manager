@@ -1,16 +1,20 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { google } from 'googleapis';
 import { ConnectionService } from '../connection/connection.service.js';
 import { TelegramService } from '../telegram/telegram.service.js';
 
 @Injectable()
 export class OAuthService {
+  private readonly logger = new Logger(OAuthService.name);
+
   constructor(
     private readonly connectionService: ConnectionService,
     private readonly telegramService: TelegramService,
   ) {}
 
   async handleCallback(code: string, state: string) {
+    this.logger.log(`Handling OAuth callback for chat=${state}`);
+
     const clientId = process.env.GOOGLE_CLIENT_ID!;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET!;
     const redirectUri = process.env.GOOGLE_REDIRECT_URI!;
@@ -46,6 +50,10 @@ export class OAuthService {
     await this.telegramService.sendMessage(
       state,
       `✅ Gmail connected as ${userinfo.email}`,
+    );
+
+    this.logger.log(
+      `Gmail connected for chat=${state}, email=${userinfo.email}`,
     );
   }
 }
