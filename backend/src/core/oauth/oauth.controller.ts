@@ -1,10 +1,12 @@
-import { Controller, Get, Query, Res } from '@nestjs/common';
+import { Controller, Get, Logger, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { OAuthService } from './oauth.service.js';
 import { GoogleCallbackDto } from './dto/google-callback.dto.js';
 
 @Controller('oauth')
 export class OAuthController {
+  private readonly logger = new Logger(OAuthController.name);
+
   constructor(private readonly oauthService: OAuthService) {}
 
   @Get('google/callback')
@@ -14,6 +16,10 @@ export class OAuthController {
       res.send(successPage());
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(
+        `OAuth callback failed for chat=${dto.state}: ${message}`,
+        error instanceof Error ? error.stack : undefined,
+      );
       res.status(400).send(errorPage(message));
     }
   }

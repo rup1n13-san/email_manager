@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { UserService } from '../user/user.service.js';
 import { TelegramUpdate } from './dto/telegram-update.dto.js';
 import { buildGoogleOAuthUrl } from '../../common/helpers/oauth-url.js';
@@ -13,6 +13,8 @@ export interface SendMessageResult {
 
 @Injectable()
 export class TelegramService {
+  private readonly logger = new Logger(TelegramService.name);
+
   constructor(private readonly userService: UserService) {}
 
   async processUpdate(update: TelegramUpdate): Promise<{ ok: boolean }> {
@@ -25,6 +27,8 @@ export class TelegramService {
     const chatId = String(message.chat.id);
     const parts = message.text.trim().split(/\s+/);
     const command = parts[0];
+
+    this.logger.debug(`Received command ${command} from chat=${chatId}`);
 
     switch (command) {
       case '/start':
@@ -76,7 +80,10 @@ export class TelegramService {
         `Click to connect your Gmail account:\n\n${url}\n\n` +
           `After authorizing, you'll receive a confirmation message here.`,
       );
-    } catch {
+    } catch (error) {
+      this.logger.warn(
+        `/connect failed for chat=${chatId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
       await this.sendMessage(
         chatId,
         'Google OAuth is not configured. Contact the bot admin.',
@@ -134,6 +141,9 @@ export class TelegramService {
         return this.sendMessage(chatId, text, { parseMode: undefined });
       }
       const errBody = await res.text();
+      this.logger.error(
+        `Telegram sendMessage failed for chat=${chatId}: ${res.status} ${errBody}`,
+      );
       throw new Error(`Telegram API error ${res.status}: ${errBody}`);
     }
 
@@ -158,6 +168,9 @@ export class TelegramService {
 
     if (!res.ok) {
       const errBody = await res.text();
+      this.logger.error(
+        `Telegram sendTyping failed for chat=${chatId}: ${res.status} ${errBody}`,
+      );
       throw new Error(`Telegram API error ${res.status}: ${errBody}`);
     }
   }
