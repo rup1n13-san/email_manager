@@ -42,6 +42,7 @@ export class OAuthService {
     await this.connectionService.storeTokens(
       state,
       userinfo.id ?? 'unknown',
+      userinfo.email ?? null,
       tokens.access_token,
       tokens.refresh_token ?? '',
       expiresAt,

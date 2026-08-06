@@ -91,13 +91,14 @@ describe('OAuthService', () => {
     expect(mockConnectionService.storeTokens).toHaveBeenCalledWith(
       'chat-1',
       'google-user-1',
+      'test@example.com',
       'google-access-token',
       'google-refresh-token',
       expect.any(Date),
     );
 
     const expiresArg = mockConnectionService.storeTokens.mock
-      .calls[0][4] as Date;
+      .calls[0][5] as Date;
     expect(expiresArg.getTime()).toBeCloseTo(expiry, -2);
 
     expect(mockTelegramService.sendMessage).toHaveBeenCalledWith(
@@ -140,6 +141,7 @@ describe('OAuthService', () => {
     expect(mockConnectionService.storeTokens).toHaveBeenCalledWith(
       'chat-2',
       'google-user-2',
+      'test2@example.com',
       'access-only',
       '',
       expect.any(Date),
