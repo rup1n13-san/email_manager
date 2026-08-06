@@ -55,6 +55,30 @@ lockfile-drift incident in this file.
 command CI runs) before committing. Now enforced by `.githooks/pre-commit` — enable
 once per clone with `git config core.hooksPath .githooks`.
 
+### [2026-08-06] | `prisma migrate deploy` P1001 against Heroku RDS-backed Postgres — built a workaround before checking for an upstream fix
+
+Prisma's classic schema-engine (used only by `migrate deploy`/`migrate dev` — separate
+from the app's runtime `@prisma/adapter-pg` client) failed every connection attempt to
+Heroku's `essential-0` Postgres (backed by a real AWS RDS Aurora cluster endpoint) with
+`P1001: Can't reach database server`, regardless of `sslmode` (`no-verify` and `require`
+both failed identically). This blocked the Heroku release phase on every deploy, silently
+keeping production on stale code for 30+ hours. Layered testing from inside real Heroku
+dynos — raw TCP, then a full TLS+Postgres handshake via `node-postgres` — both succeeded
+instantly, isolating the bug to Prisma's own engine, not the network, DB, or SSL config.
+A full pass was spent building a custom migration-runner script (`pg` + hand-rolled
+`_prisma_migrations` tracking) before testing the obvious cheap thing:
+`npx prisma@latest migrate status` against production. It worked immediately — the bug
+was already fixed in 7.9.1 (project was pinned to 7.7.0, installed 7.9.0).
+
+**Rule:** When a well-known library's CLI/engine fails in a way the library's own driver
+doesn't, check for a newer version before building a workaround. `npx <pkg>@latest
+<command>` against the real target (in a disposable context — one-off dyno, throwaway
+branch) is a near-zero-cost test that rules out an already-fixed upstream bug before any
+code gets written. Only build custom tooling after confirming there's no config flag and
+no newer version that fixes it — search the library's docs/source (e.g. via Context7)
+for the actual supported mechanism first, rather than assuming the API surface you'd
+expect exists.
+
 ### Format
 ```
 [YYYY-MM-DD] | what went wrong | rule to avoid it next time
