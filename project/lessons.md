@@ -79,6 +79,20 @@ no newer version that fixes it — search the library's docs/source (e.g. via Co
 for the actual supported mechanism first, rather than assuming the API surface you'd
 expect exists.
 
+### [2026-08-06] | Datadog Heroku buildpack silently defaults to the US1 site — traces dropped with 403, no startup error
+
+`DD_SITE` was never set. The Datadog Heroku buildpack defaults to `datadoghq.com` (US1)
+when it's unset, with no warning at boot — the agent starts fine, `dd-trace` loads fine,
+everything looks healthy. The only symptom was buried in the logs: `Retried payload 4
+times: server responded with "403 Forbidden"` / `Dropping Payload after 4 retries`. This
+org's Datadog account is on US5, so the (valid) API key was being sent to the wrong
+region's intake and rejected.
+
+**Rule:** When adding Datadog APM to a Heroku app, always set `DD_SITE` explicitly to
+match the account's actual site (check the Datadog app URL — `us5.datadoghq.com`,
+`datadoghq.eu`, etc.) rather than relying on the US1 default. A missing/wrong `DD_SITE`
+fails silently — nothing errors until you notice traces never show up in the UI.
+
 ### Format
 ```
 [YYYY-MM-DD] | what went wrong | rule to avoid it next time
