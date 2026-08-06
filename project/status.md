@@ -1,6 +1,6 @@
 # Project Status — Email Manager v2
 
-_Last updated: 2026-07-27_
+_Last updated: 2026-08-06_
 
 ## Current snapshot
 
@@ -12,13 +12,43 @@ _Last updated: 2026-07-27_
 | Agent rules | Root `AGENTS.md` |
 | Tracking files | `project/` (status, todo, lessons, decisions) — committed |
 | V2 code | `backend/` — NestJS 11, Prisma 7, CI/CD wired, deployed on Heroku |
-| Branch | `dev` (active, merged PRs #1–#8) |
-| Deploy | https://email-manager-a30f36867c98.herokuapp.com/api/health — green |
-| Tests | 57 pass (6 suites), build+typecheck+lint clean |
+| Branch | `dev` (active, merged PRs #1–#13) |
+| Deploy | https://email-manager-a30f36867c98.herokuapp.com/api/health — was down since 2026-08-04 (H10 crash loop), fix pending PR |
+| Tests | 63 pass (7 suites), build+typecheck+lint clean |
 | Tag | `v1-python` — marks Python v1, pushed to origin |
-| Infra | Heroku app `email-manager` + Heroku Postgres, CI deploys on push to `dev` |
+| Infra | Heroku app `email-manager` + Heroku Postgres (`essential-0`, RDS-backed), CI deploys on push to `dev` |
 
 ## Sessions
+
+### [2026-08-06 #7] — Diagnosed and fixed `prisma migrate deploy` P1001 blocking Heroku release phase
+
+**Done:**
+- Diagnosed why production was still crash-looping on old code 30+ hours after the
+  `tracer.js` boot-crash fix (PR #13) merged to `dev`: the Heroku release phase
+  (`prisma migrate deploy`) was failing with `P1001` on every deploy attempt, so Heroku
+  never promoted the new slug — the dyno kept serving stale, pre-fix code.
+- Ruled out DB health, network/security-group reachability, and `sslmode` value via
+  layered testing from inside real Heroku one-off dynos: raw TCP succeeded, a full
+  TLS+Postgres handshake via `node-postgres` succeeded, but Prisma's own migrate engine
+  failed identically regardless of `sslmode`. Isolated the bug to Prisma's classic
+  schema-engine (used only by `migrate deploy`, separate from the app's runtime
+  `@prisma/adapter-pg` client).
+- First attempt (wiring an `adapter()` into `prisma.config.ts`) turned out to be dead
+  code — Prisma 7 removed adapter support from the CLI config entirely (confirmed by
+  reading the installed package's compiled JS/`.d.ts`, not just docs). Second attempt
+  (a custom `pg`-based migration runner script) worked but was scrapped once a cheaper
+  test — `npx prisma@latest migrate status` against production — proved the bug was
+  already fixed upstream in 7.9.1. See `project/lessons.md` [2026-08-06].
+- Fix: bumped `prisma`, `@prisma/client`, `@prisma/adapter-pg` from `^7.7.0` to
+  `^7.9.1` in `backend/package.json`. No workaround code, no config changes.
+
+**Decisions locked:**
+- Don't build custom tooling around a library bug before testing whether a newer
+  version already fixes it.
+
+**Next up:**
+- Push `fix/backend/prisma-migrate-adapter`, open PR to `dev`, confirm the Heroku
+  release phase succeeds post-merge and the app comes back online.
 
 ### [2026-07-27 #6] — ULID PK migration + /connect OAuth flow (Phases 4: /connect)
 
