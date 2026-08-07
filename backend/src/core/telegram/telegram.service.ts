@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { UserService } from '../user/user.service.js';
+import { ConnectionService } from '../connection/connection.service.js';
 import { TelegramUpdate } from './dto/telegram-update.dto.js';
 import { buildGoogleOAuthUrl } from '../../common/helpers/oauth-url.js';
 
@@ -15,7 +16,10 @@ export interface SendMessageResult {
 export class TelegramService {
   private readonly logger = new Logger(TelegramService.name);
 
-  constructor(private readonly userService: UserService) {}
+  constructor(
+    private readonly userService: UserService,
+    private readonly connectionService: ConnectionService,
+  ) {}
 
   async processUpdate(update: TelegramUpdate): Promise<{ ok: boolean }> {
     const message = update.message;
@@ -37,6 +41,10 @@ export class TelegramService {
         return this.handleHelp(chatId);
       case '/connect':
         return this.handleConnect(chatId);
+      case '/list':
+        return this.handleList(chatId);
+      case '/disconnect':
+        return this.handleDisconnect(chatId, parts[1]);
       default:
         await this.sendMessage(chatId, `Unknown command: ${command}`);
         return { ok: true };
@@ -63,6 +71,7 @@ export class TelegramService {
       `Welcome, ${from.first_name}! I'm your Email Manager bot.\n\n` +
         `Here's what I can do:\n` +
         `/connect — Link your Gmail account\n` +
+        `/list — Show your connected Gmail accounts\n` +
         `/disconnect — Remove your Gmail connection\n` +
         `/search — Search your emails\n` +
         `/write — Send an email\n` +
@@ -92,6 +101,68 @@ export class TelegramService {
     return { ok: true };
   }
 
+  private async handleList(chatId: string): Promise<{ ok: boolean }> {
+    const connections = await this.connectionService.listConnections(chatId);
+
+    if (connections.length === 0) {
+      await this.sendMessage(
+        chatId,
+        "You don't have any connected Gmail accounts yet. Use /connect to link one.",
+      );
+      return { ok: true };
+    }
+
+    const lines = connections.map(
+      (c, i) =>
+        `${i + 1}. ${c.email ?? '(email unknown — reconnect with /connect to refresh)'}`,
+    );
+    await this.sendMessage(
+      chatId,
+      `Connected Gmail accounts:\n\n${lines.join('\n')}\n\n` +
+        (connections.length > 1
+          ? 'Use /disconnect <email> to remove one.'
+          : 'Use /disconnect to remove it.'),
+    );
+    return { ok: true };
+  }
+
+  private async handleDisconnect(
+    chatId: string,
+    emailArg?: string,
+  ): Promise<{ ok: boolean }> {
+    try {
+      const result = await this.connectionService.disconnect(chatId, emailArg);
+
+      if (result.status === 'ambiguous') {
+        const lines = result.accounts.map(
+          (a) => `- ${a.email ?? '(email unknown)'}`,
+        );
+        await this.sendMessage(
+          chatId,
+          `You have multiple connected accounts. Which one?\n\n${lines.join('\n')}\n\n` +
+            `Reply with /disconnect <email>`,
+        );
+        return { ok: true };
+      }
+
+      const label = result.email ?? 'that account';
+      await this.sendMessage(
+        chatId,
+        result.revoked
+          ? `Disconnected ${label}. Google access has been revoked.`
+          : `Disconnected ${label} locally, but revoking Google access failed. ` +
+              `Please remove it manually at https://myaccount.google.com/permissions`,
+      );
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        await this.sendMessage(chatId, error.message);
+        return { ok: true };
+      }
+      throw error;
+    }
+  }
+
   private async handleHelp(chatId: string): Promise<{ ok: boolean }> {
     await this.sendMessage(
       chatId,
@@ -99,6 +170,7 @@ export class TelegramService {
         `Start by sending /connect to link your account.\n\n` +
         `Commands:\n` +
         `/connect — Link Gmail\n` +
+        `/list — Show connected Gmail accounts\n` +
         `/disconnect — Unlink Gmail\n` +
         `/search <query> — Search emails\n` +
         `/write to:... subject:... body:... — Send email\n` +

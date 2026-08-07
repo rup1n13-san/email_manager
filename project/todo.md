@@ -51,7 +51,8 @@
 - [x] `/help` — command list
 - [x] Telegram outbound — `sendMessage()` with MarkdownV2 fallback, `sendTyping()`
 - [x] `/connect` — OAuth URL + callback + token store (2026-07-27)
-- [ ] `/disconnect` — revoke + delete tokens
+- [ ] `/list` — list connected Gmail accounts (multi-account)
+- [ ] `/disconnect` — revoke + delete tokens (multi-account, revoke with Google)
 - [ ] `/search` — Gmail API query
 - [ ] `/write` — Gmail API send
 - [ ] `/summary` — AI classify + summarize

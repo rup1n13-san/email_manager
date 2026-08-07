@@ -12,8 +12,8 @@ _Last updated: 2026-08-06_
 | Agent rules | Root `AGENTS.md` |
 | Tracking files | `project/` (status, todo, lessons, decisions) — committed |
 | V2 code | `backend/` — NestJS 11, Prisma 7, CI/CD wired, deployed on Heroku |
-| Branch | `dev` (active, merged PRs #1–#13) |
-| Deploy | https://email-manager-a30f36867c98.herokuapp.com/api/health — was down since 2026-08-04 (H10 crash loop), fix pending PR |
+| Branch | `dev` (active, merged PRs #1–#14) |
+| Deploy | https://email-manager-a30f36867c98.herokuapp.com/api/health — up, `web.1` running since 2026-08-06 11:07 (release v33), webhook confirmed responding (`/start` processed) |
 | Tests | 63 pass (7 suites), build+typecheck+lint clean |
 | Tag | `v1-python` — marks Python v1, pushed to origin |
 | Infra | Heroku app `email-manager` + Heroku Postgres (`essential-0`, RDS-backed), CI deploys on push to `dev` |
@@ -41,14 +41,28 @@ _Last updated: 2026-08-06_
   already fixed upstream in 7.9.1. See `project/lessons.md` [2026-08-06].
 - Fix: bumped `prisma`, `@prisma/client`, `@prisma/adapter-pg` from `^7.7.0` to
   `^7.9.1` in `backend/package.json`. No workaround code, no config changes.
+- PR #14 merged to `dev` (2026-08-06 09:46 UTC). Heroku release v32 (code deploy)
+  succeeded — release phase passed for the first time since 2026-08-04. `web.1` came
+  back up; webhook confirmed responding (`/start` processed end-to-end in prod logs).
+- Follow-on fix, same session: Datadog APM traces were being dropped with `403
+  Forbidden` (agent defaults to the US1 site; this Datadog org is on US5). Fixed with
+  `heroku config:set DD_SITE=us5.datadoghq.com` (release v33, also succeeded).
+- Created a new global skill, `~/.claude/skills/research-before-workaround/SKILL.md`
+  (applies to all projects, not just this repo), codifying the lesson below: check for
+  a known/already-fixed upstream issue (newer version, docs, GitHub issues) before
+  writing custom workaround code.
 
 **Decisions locked:**
 - Don't build custom tooling around a library bug before testing whether a newer
-  version already fixes it.
+  version already fixes it — now enforced by the `research-before-workaround` skill.
+- Datadog Heroku buildpack requires `DD_SITE` set explicitly for any non-US1 org;
+  it silently defaults to `datadoghq.com` otherwise (no error until traces get 403'd).
 
 **Next up:**
-- Push `fix/backend/prisma-migrate-adapter`, open PR to `dev`, confirm the Heroku
-  release phase succeeds post-merge and the app comes back online.
+- Nothing pending on this incident — closed. Local branch
+  `fix/backend/prisma-migrate-adapter` can be deleted (merged); switch back to `dev`.
+- Resume Phase 4 backlog: `/disconnect`, `/search`, `/write`, `/summary` (see
+  `project/todo.md`).
 
 ### [2026-07-27 #6] — ULID PK migration + /connect OAuth flow (Phases 4: /connect)
 
