@@ -93,6 +93,27 @@ match the account's actual site (check the Datadog app URL — `us5.datadoghq.co
 `datadoghq.eu`, etc.) rather than relying on the US1 default. A missing/wrong `DD_SITE`
 fails silently — nothing errors until you notice traces never show up in the UI.
 
+### [2026-08-13] | Prisma schema patched incrementally across 4 migrations — cost a full remodel and a destructive migration
+
+`Connection` and `EmailPreference` were never designed, only patched. Each feature added one
+column and moved on: `email` arrived nullable in `multi_account_connections` even though
+`/switch` and `/disconnect` address accounts *by email*; `provider` stayed a bare `String`
+while the code compared it to the literal `'google'` in four places; `EmailPreference` shipped
+with no `createdAt`/`updatedAt`; and `activeConnectionId` was first added as a scalar with no
+foreign key, so nothing stopped it pointing at a deleted or another user's connection. Fixing
+all of it at once meant a remodel touching 7 files, and a migration that had to `DELETE FROM
+"Connection"` because Prisma cannot rename or cast — it emits `DROP COLUMN` + `ADD COLUMN
+NOT NULL`, which both loses data and hard-fails on any table that has rows.
+
+**Rule:** Treat `schema.prisma` as a design artifact, not an append target. Before adding or
+changing a field, ask the four questions that were skipped here: is it nullable only because
+it's convenient right now, or genuinely optional at read time? is it a closed set that should
+be an enum instead of a `String`? does every model carry `createdAt`/`updatedAt`? does every
+id pointing at another row have a real `@relation` with an explicit `onDelete`? Then always
+read the generated `migration.sql` before it reaches a table with rows — Prisma Migrate diffs
+*shapes*, never data, so `prisma migrate diff` reporting "no difference" says nothing about
+whether the path there destroys rows.
+
 ### Format
 ```
 [YYYY-MM-DD] | what went wrong | rule to avoid it next time
