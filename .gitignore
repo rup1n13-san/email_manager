@@ -1,11 +1,7 @@
 # Secrets (never commit)
 .env
-.env.*
+.env.production
 config.py
-
-# Agent tracking files (never commit)
-.md/
-tasks/*.md
 
 # Node.js
 node_modules/
@@ -18,6 +14,7 @@ dist/
 # Prisma
 *.db
 *.db-journal
+backend/src/generated/
 
 # Logs
 *.log

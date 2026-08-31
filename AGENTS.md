@@ -12,9 +12,24 @@ Propose better alternatives. Validate before coding.
 ## Bootstrap (every session)
 
 1. Read `docs/PRD.md` — system requirements and architecture
-2. Read `.md/project_status.md` — where are we?
-3. Check `tasks/todo.md` — today's task scope
+2. Read `project/status.md` — where are we?
+3. Check `project/todo.md` — today's task scope
 4. Load only files relevant to today's scope
+5. One-time per clone: `git config core.hooksPath .githooks` — enables the pre-commit
+   lockfile check (see Lockfile Discipline below)
+
+---
+
+## Lockfile Discipline
+
+`backend/package-lock.json` has drifted out of sync with `package.json` and broken CI
+multiple times (see `project/lessons.md`). Rule: never hand-edit or partially regenerate
+the lockfile. Always run a full `npm install` in `backend/` after any `package.json`
+change, then verify with `npm ci` (the exact command CI runs) before committing.
+
+`.githooks/pre-commit` enforces this automatically once `core.hooksPath` is set (step 5
+above): it runs `npm ci --dry-run` whenever `package.json` or `package-lock.json` is
+staged and blocks the commit if they're out of sync.
 
 ---
 
@@ -52,6 +67,7 @@ Propose better alternatives. Validate before coding.
 | **AI fallback preserved** | Groq unavailable → keyword-based classification. The v1 `classify_basic()` logic must exist in v2. Never remove it. |
 | **No `Co-authored-by` in commits** | Never. |
 | **No `feature`, `add`, `update`, `wip` commit types** | Only `feat`, `fix`, `refactor`, `chore`, `docs` |
+| **PrismaClient import path** | Never `import { PrismaClient } from '@prisma/client'` — fails in ESM. Always import from the generated path: `import { PrismaClient } from '../generated/prisma/client.js'` (or relative from current file). Schema generator uses `provider = "prisma-client"` with `output = "../src/generated/prisma"`. |
 
 ---
 
@@ -62,6 +78,7 @@ backend/src/
   common/       — decorators, guards, interceptors, filters, helpers, shared DTOs
   config/       — per-concern config files (env validation, etc.)
   core/         — business domain modules (telegram, oauth, gmail, ai, user, connection, scheduler)
+  generated/    — Prisma-generated client (gitignored, regenerated on prisma generate)
   prisma/       — PrismaModule, PrismaService, extensions
 ```
 
@@ -153,13 +170,13 @@ Verdict: ready to merge? Yes / No / With conditions.
 After every task:
 
 1. Anything fail or need multiple attempts?
-   → Append to `tasks/lessons.md`:
+   → Append to `project/lessons.md`:
    `[YYYY-MM-DD] | what went wrong | rule to avoid it`
 
-2. Is `.md/project_status.md` outdated?
+2. Is `project/status.md` outdated?
    → Update it
 
 3. Significant architectural decision made?
-   → Write it in `.md/decisions/<topic>.md`
+   → Write it in `project/decisions/<topic>.md`
 
 Skipping this = lost knowledge.
