@@ -1,5 +1,26 @@
 # Todo — Email Manager v2
 
+## Phase X: URGENT — `main` is a live liability (session 2026-08-27)
+
+This repo is now Rupinie's submitted MLH Fellowship code sample. `main` still shows the
+9-commit scaffold with a fake `EncryptionHelper` under a README claiming finished features.
+Do this before anything else, including Phase 4c below.
+
+- [ ] Confirm what URL was actually pasted into the MLH form's "Code Sample GitHub URL"
+      field — bare repo root, or `/tree/dev`. If it's the bare root, treat the next step as
+      time-critical (rolling admissions — a reviewer could open the link any day)
+- [ ] Check `git status` on whatever's currently checked out before touching branches — there
+      is uncommitted WIP on `feat/backend/active-account-switch` (7 files) that must not be
+      lost or dragged into this PR
+- [ ] Open `dev → main` PR: `gh pr create --base main --head dev` (no local checkout needed,
+      `dev` is already pushed and in sync with `origin/dev`) — merge it, not a force-push or
+      fast-forward hack
+- [ ] After merge, verify live: `git show main:backend/src/common/helpers/encryption.ts`
+      should show the real AES-256-GCM implementation, not the `return plaintext` stub, and
+      the repo's default-branch view on GitHub should match the README
+- [ ] Once confirmed, update the MLH-side note in `jobs_hunting/ROADMAP.md` (search
+      "CORRECTION DID NOT HOLD") and `jobs_hunting/.claude/PROJECT_STATUS.md` to close this out
+
 ## Phase 0: Planning (session 2026-07-20)
 
 - [x] Architecture diagram v3
