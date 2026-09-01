@@ -1,11 +1,21 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { UserService } from '../user/user.service.js';
 import { ConnectionService } from '../connection/connection.service.js';
-import { TelegramUpdate } from './dto/telegram-update.dto.js';
+import {
+  TelegramUpdate,
+  TelegramCallbackQuery,
+} from './dto/telegram-update.dto.js';
 import { buildGoogleOAuthUrl } from '../../common/helpers/oauth-url.js';
+import { encodeOAuthState } from '../../common/helpers/oauth-state.js';
+import { ConnectionProvider } from '../../generated/prisma/client.js';
+
+export interface InlineKeyboardMarkup {
+  inline_keyboard: { text: string; callback_data: string }[][];
+}
 
 export interface SendMessageOptions {
   parseMode?: 'MarkdownV2' | 'HTML';
+  replyMarkup?: InlineKeyboardMarkup;
 }
 
 export interface SendMessageResult {
@@ -22,8 +32,16 @@ export class TelegramService {
   ) {}
 
   async processUpdate(update: TelegramUpdate): Promise<{ ok: boolean }> {
+    if (update.callback_query) {
+      return this.handleCallbackQuery(update.callback_query);
+    }
+
     const message = update.message;
     if (!message?.text) return { ok: true };
+
+    // Only private chats: in a group, chat.id is the group's, so a connection
+    // would be bound to a record every member shares.
+    if (message.chat.type !== 'private') return { ok: true };
 
     const isCommand = message.entities?.some((e) => e.type === 'bot_command');
     if (!isCommand) return { ok: true };
@@ -83,11 +101,17 @@ export class TelegramService {
 
   private async handleConnect(chatId: string): Promise<{ ok: boolean }> {
     try {
-      const url = buildGoogleOAuthUrl(chatId);
+      // The callback binds tokens to this chat's user, so it must exist first.
+      const existing = await this.userService.findByChatId(chatId);
+      if (!existing) await this.userService.create(chatId);
+
+      const url = buildGoogleOAuthUrl(
+        encodeOAuthState(chatId, ConnectionProvider.GOOGLE),
+      );
       await this.sendMessage(
         chatId,
         `Click to connect your Gmail account:\n\n${url}\n\n` +
-          `After authorizing, you'll receive a confirmation message here.`,
+          `After authorizing, you'll be asked here to confirm the account.`,
       );
     } catch (error) {
       this.logger.warn(
@@ -180,6 +204,121 @@ export class TelegramService {
     return { ok: true };
   }
 
+  async sendConnectionConfirmationPrompt(
+    chatId: string,
+    connectionId: string,
+    email: string,
+  ): Promise<void> {
+    await this.sendMessage(
+      chatId,
+      `Connect ${email}?\n\n` +
+        `This account is not linked yet. Confirm to finish, or reject to cancel and revoke access.`,
+      {
+        replyMarkup: {
+          inline_keyboard: [
+            [
+              { text: 'Confirm', callback_data: `c:${connectionId}` },
+              { text: 'Reject', callback_data: `r:${connectionId}` },
+            ],
+          ],
+        },
+      },
+    );
+  }
+
+  private async handleCallbackQuery(
+    query: TelegramCallbackQuery,
+  ): Promise<{ ok: boolean }> {
+    // from.id identifies the human who tapped — not the chat the message sits
+    // in — so a forwarded button can't act on someone else's connection.
+    const chatId = String(query.from.id);
+    const [action, connectionId] = (query.data ?? '').split(':');
+
+    let notice = 'This button is no longer valid.';
+
+    if (connectionId && (action === 'c' || action === 'r')) {
+      const result =
+        action === 'c'
+          ? await this.connectionService.confirmConnection(connectionId, chatId)
+          : await this.connectionService.rejectConnection(connectionId, chatId);
+
+      if (result.ok) {
+        notice = action === 'c' ? 'Connected' : 'Cancelled';
+        await this.sendMessage(
+          chatId,
+          action === 'c'
+            ? `✅ Gmail connected as ${result.email}`
+            : `Cancelled — ${result.email} was not linked and its access has been revoked.`,
+        );
+        if (query.message) {
+          await this.editMessageReplyMarkup(
+            String(query.message.chat.id),
+            query.message.message_id,
+          );
+        }
+      } else {
+        notice = 'Already handled or expired.';
+      }
+    }
+
+    await this.answerCallbackQuery(query.id, notice);
+    return { ok: true };
+  }
+
+  async answerCallbackQuery(queryId: string, text?: string): Promise<void> {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) {
+      throw new Error('TELEGRAM_BOT_TOKEN is not set');
+    }
+
+    const res = await fetch(
+      `https://api.telegram.org/bot${token}/answerCallbackQuery`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ callback_query_id: queryId, text }),
+      },
+    );
+
+    // Cosmetic only (dismisses the client spinner). Never fail the webhook over
+    // it — a thrown error would make Telegram redeliver the whole update.
+    if (!res.ok) {
+      this.logger.warn(
+        `Telegram answerCallbackQuery failed: ${res.status} ${await res.text()}`,
+      );
+    }
+  }
+
+  async editMessageReplyMarkup(
+    chatId: string,
+    messageId: number,
+  ): Promise<void> {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) {
+      throw new Error('TELEGRAM_BOT_TOKEN is not set');
+    }
+
+    const res = await fetch(
+      `https://api.telegram.org/bot${token}/editMessageReplyMarkup`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: { inline_keyboard: [] },
+        }),
+      },
+    );
+
+    // Cosmetic (strips the buttons); same reasoning as answerCallbackQuery.
+    if (!res.ok) {
+      this.logger.warn(
+        `Telegram editMessageReplyMarkup failed: ${res.status} ${await res.text()}`,
+      );
+    }
+  }
+
   async sendMessage(
     chatId: string,
     text: string,
@@ -199,6 +338,10 @@ export class TelegramService {
       body.parse_mode = options.parseMode;
     }
 
+    if (options?.replyMarkup) {
+      body.reply_markup = options.replyMarkup;
+    }
+
     const res = await fetch(
       `https://api.telegram.org/bot${token}/sendMessage`,
       {
@@ -209,8 +352,13 @@ export class TelegramService {
     );
 
     if (!res.ok) {
-      if (options?.parseMode) {
-        return this.sendMessage(chatId, text, { parseMode: undefined });
+      // Only a 400 can be a parse-mode problem. Retrying on 429/5xx would mask
+      // rate limits and outages as formatting errors.
+      if (options?.parseMode && res.status === 400) {
+        return this.sendMessage(chatId, text, {
+          ...options,
+          parseMode: undefined,
+        });
       }
       const errBody = await res.text();
       this.logger.error(

@@ -4,9 +4,12 @@ import { NotFoundException } from '@nestjs/common';
 import { TelegramService } from './telegram.service.js';
 import { UserService } from '../user/user.service.js';
 import { ConnectionService } from '../connection/connection.service.js';
+import { decodeOAuthState } from '../../common/helpers/oauth-state.js';
 
 const BOT_TOKEN = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11';
 const CHAT_ID = '98765';
+const ENCRYPTION_KEY =
+  '0992b7c6d936d9071b4e285b1794cf935a2b5a5a163c7ef1dc21c31c572960e7';
 
 function mockFetch(response: Partial<Response>) {
   return jest
@@ -17,6 +20,16 @@ function mockFetch(response: Partial<Response>) {
 interface FetchCallArgs {
   body: string;
 }
+
+const mockUserWithRelations = {
+  id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+  telegramChatId: CHAT_ID,
+  activeConnectionId: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+  settings: null,
+  connections: [],
+};
 
 function makeUpdate(overrides: Record<string, unknown> = {}) {
   return {
@@ -58,6 +71,8 @@ async function createService(): Promise<{
         useValue: {
           listConnections: jest.fn<any>(),
           disconnect: jest.fn<any>(),
+          confirmConnection: jest.fn<any>(),
+          rejectConnection: jest.fn<any>(),
         },
       },
     ],
@@ -74,13 +89,16 @@ describe('TelegramService', () => {
   let originalToken: string | undefined;
   let originalClientId: string | undefined;
   let originalRedirectUri: string | undefined;
+  let originalEncryptionKey: string | undefined;
 
   beforeAll(() => {
     originalToken = process.env.TELEGRAM_BOT_TOKEN;
     originalClientId = process.env.GOOGLE_CLIENT_ID;
     originalRedirectUri = process.env.GOOGLE_REDIRECT_URI;
+    originalEncryptionKey = process.env.ENCRYPTION_KEY;
     process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
     process.env.GOOGLE_REDIRECT_URI = 'https://example.com/callback';
+    process.env.ENCRYPTION_KEY = ENCRYPTION_KEY;
   });
 
   beforeEach(() => {
@@ -92,6 +110,7 @@ describe('TelegramService', () => {
     process.env.TELEGRAM_BOT_TOKEN = originalToken;
     process.env.GOOGLE_CLIENT_ID = originalClientId;
     process.env.GOOGLE_REDIRECT_URI = originalRedirectUri;
+    process.env.ENCRYPTION_KEY = originalEncryptionKey;
   });
 
   describe('sendMessage', () => {
@@ -169,6 +188,56 @@ describe('TelegramService', () => {
         unknown
       >;
       expect(secondBody.parse_mode).toBeUndefined();
+    });
+
+    it('does NOT retry on 429 — rate limits must surface, not look like a parse error', async () => {
+      const { service } = await createService();
+      const fetchMock = mockFetch({
+        ok: false,
+        status: 429,
+        text: () => Promise.resolve('Too Many Requests: retry later'),
+      });
+
+      await expect(
+        service.sendMessage(CHAT_ID, 'hi', { parseMode: 'MarkdownV2' }),
+      ).rejects.toThrow('Telegram API error 429');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT retry on 500', async () => {
+      const { service } = await createService();
+      const fetchMock = mockFetch({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('Internal Server Error'),
+      });
+
+      await expect(
+        service.sendMessage(CHAT_ID, 'hi', { parseMode: 'MarkdownV2' }),
+      ).rejects.toThrow('Telegram API error 500');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes reply_markup through when provided', async () => {
+      const { service } = await createService();
+      const fetchMock = mockFetch({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true }),
+      });
+
+      await service.sendMessage(CHAT_ID, 'pick one', {
+        replyMarkup: {
+          inline_keyboard: [[{ text: 'Confirm', callback_data: 'c:1' }]],
+        },
+      });
+
+      const call = fetchMock.mock.calls[0] as unknown as [
+        string,
+        FetchCallArgs,
+      ];
+      expect(call[1].body).toContain('"reply_markup"');
+      expect(call[1].body).toContain('"callback_data":"c:1"');
     });
 
     it('throws when TELEGRAM_BOT_TOKEN is missing', async () => {
@@ -341,7 +410,7 @@ describe('TelegramService', () => {
         );
       });
 
-      it('URL includes the chatId as state parameter', async () => {
+      it('URL state parameter decodes back to the chatId', async () => {
         const { service } = await createService();
         const sendSpy = jest
           .spyOn(service, 'sendMessage')
@@ -355,7 +424,9 @@ describe('TelegramService', () => {
         );
 
         const message = sendSpy.mock.calls[0][1];
-        expect(message).toContain('state=98765');
+        const url = new URL(message.match(/https:\S+/)![0]);
+        const state = url.searchParams.get('state')!;
+        expect(decodeOAuthState(state, 'GOOGLE')).toEqual({ chatId: '98765' });
       });
 
       it('sends error message when OAuth config is missing', async () => {
@@ -408,7 +479,9 @@ describe('TelegramService', () => {
         const { service, connectionService } = await createService();
         jest
           .spyOn(connectionService, 'listConnections')
-          .mockResolvedValue([{ email: 'a@x.com', providerUserId: 'gid-1' }]);
+          .mockResolvedValue([
+            { email: 'a@x.com', providerAccountId: 'gid-1' },
+          ]);
         const sendSpy = jest
           .spyOn(service, 'sendMessage')
           .mockResolvedValue({ ok: true });
@@ -428,8 +501,8 @@ describe('TelegramService', () => {
       it('lists multiple connected accounts', async () => {
         const { service, connectionService } = await createService();
         jest.spyOn(connectionService, 'listConnections').mockResolvedValue([
-          { email: 'a@x.com', providerUserId: 'gid-1' },
-          { email: 'b@x.com', providerUserId: 'gid-2' },
+          { email: 'a@x.com', providerAccountId: 'gid-1' },
+          { email: 'b@x.com', providerAccountId: 'gid-2' },
         ]);
         const sendSpy = jest
           .spyOn(service, 'sendMessage')
@@ -533,8 +606,8 @@ describe('TelegramService', () => {
         jest.spyOn(connectionService, 'disconnect').mockResolvedValue({
           status: 'ambiguous',
           accounts: [
-            { email: 'a@x.com', providerUserId: 'gid-1' },
-            { email: 'b@x.com', providerUserId: 'gid-2' },
+            { email: 'a@x.com', providerAccountId: 'gid-1' },
+            { email: 'b@x.com', providerAccountId: 'gid-2' },
           ],
         });
         const sendSpy = jest
@@ -658,6 +731,206 @@ describe('TelegramService', () => {
         expect(result).toEqual({ ok: true });
         expect(sendSpy).not.toHaveBeenCalled();
       });
+
+      it('ignores commands sent in a group chat', async () => {
+        const { service, connectionService } = await createService();
+        const listSpy = jest.spyOn(connectionService, 'listConnections');
+        const sendSpy = jest
+          .spyOn(service, 'sendMessage')
+          .mockResolvedValue({ ok: true });
+
+        const result = await service.processUpdate(
+          makeUpdate({
+            text: '/connect',
+            entities: [{ type: 'bot_command', offset: 0, length: 8 }],
+            chat: { id: -100200300, type: 'group' },
+          }),
+        );
+
+        expect(result).toEqual({ ok: true });
+        expect(sendSpy).not.toHaveBeenCalled();
+        expect(listSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('/connect user guard', () => {
+    it('creates the user when the chat has never run /start', async () => {
+      const { service, userService } = await createService();
+      jest.spyOn(service, 'sendMessage').mockResolvedValue({ ok: true });
+      jest.spyOn(userService, 'findByChatId').mockResolvedValue(null);
+      const createSpy = jest
+        .spyOn(userService, 'create')
+        .mockResolvedValue(mockUserWithRelations);
+
+      await service.processUpdate(
+        makeUpdate({
+          text: '/connect',
+          entities: [{ type: 'bot_command', offset: 0, length: 8 }],
+        }),
+      );
+
+      expect(createSpy).toHaveBeenCalledWith('98765');
+    });
+
+    it('does not recreate an existing user', async () => {
+      const { service, userService } = await createService();
+      jest.spyOn(service, 'sendMessage').mockResolvedValue({ ok: true });
+      jest
+        .spyOn(userService, 'findByChatId')
+        .mockResolvedValue(mockUserWithRelations);
+      const createSpy = jest.spyOn(userService, 'create');
+
+      await service.processUpdate(
+        makeUpdate({
+          text: '/connect',
+          entities: [{ type: 'bot_command', offset: 0, length: 8 }],
+        }),
+      );
+
+      expect(createSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('callback_query (confirm / reject)', () => {
+    function makeCallbackUpdate(data: string, fromId = 98765) {
+      return {
+        update_id: 2,
+        callback_query: {
+          id: 'cbq-1',
+          from: { id: fromId },
+          message: { chat: { id: 98765, type: 'private' }, message_id: 500 },
+          data,
+        },
+      };
+    }
+
+    it('confirms the connection and reports the linked account', async () => {
+      const { service, connectionService } = await createService();
+      const sendSpy = jest
+        .spyOn(service, 'sendMessage')
+        .mockResolvedValue({ ok: true });
+      const answerSpy = jest
+        .spyOn(service, 'answerCallbackQuery')
+        .mockResolvedValue();
+      jest.spyOn(service, 'editMessageReplyMarkup').mockResolvedValue();
+      const confirmSpy = jest
+        .spyOn(connectionService, 'confirmConnection')
+        .mockResolvedValue({ ok: true, email: 'me@gmail.com' });
+
+      const result = await service.processUpdate(makeCallbackUpdate('c:conn1'));
+
+      expect(result).toEqual({ ok: true });
+      expect(confirmSpy).toHaveBeenCalledWith('conn1', '98765');
+      expect(sendSpy).toHaveBeenCalledWith(
+        '98765',
+        expect.stringContaining('me@gmail.com'),
+      );
+      expect(answerSpy).toHaveBeenCalled();
+    });
+
+    it('rejects the connection and confirms revocation to the user', async () => {
+      const { service, connectionService } = await createService();
+      const sendSpy = jest
+        .spyOn(service, 'sendMessage')
+        .mockResolvedValue({ ok: true });
+      jest.spyOn(service, 'answerCallbackQuery').mockResolvedValue();
+      jest.spyOn(service, 'editMessageReplyMarkup').mockResolvedValue();
+      const rejectSpy = jest
+        .spyOn(connectionService, 'rejectConnection')
+        .mockResolvedValue({ ok: true, email: 'me@gmail.com' });
+
+      await service.processUpdate(makeCallbackUpdate('r:conn1'));
+
+      expect(rejectSpy).toHaveBeenCalledWith('conn1', '98765');
+      expect(sendSpy).toHaveBeenCalledWith(
+        '98765',
+        expect.stringContaining('revoked'),
+      );
+    });
+
+    it('uses the tapping user id, so another user cannot act on the button', async () => {
+      const { service, connectionService } = await createService();
+      jest.spyOn(service, 'sendMessage').mockResolvedValue({ ok: true });
+      jest.spyOn(service, 'answerCallbackQuery').mockResolvedValue();
+      const confirmSpy = jest
+        .spyOn(connectionService, 'confirmConnection')
+        .mockResolvedValue({ ok: false });
+
+      await service.processUpdate(makeCallbackUpdate('c:conn1', 11111));
+
+      expect(confirmSpy).toHaveBeenCalledWith('conn1', '11111');
+    });
+
+    it('answers without sending a message when the button is already handled', async () => {
+      const { service, connectionService } = await createService();
+      const sendSpy = jest
+        .spyOn(service, 'sendMessage')
+        .mockResolvedValue({ ok: true });
+      const answerSpy = jest
+        .spyOn(service, 'answerCallbackQuery')
+        .mockResolvedValue();
+      jest
+        .spyOn(connectionService, 'confirmConnection')
+        .mockResolvedValue({ ok: false });
+
+      await service.processUpdate(makeCallbackUpdate('c:conn1'));
+
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(answerSpy).toHaveBeenCalledWith(
+        'cbq-1',
+        expect.stringContaining('Already handled'),
+      );
+    });
+
+    it('ignores unknown callback data but still answers the query', async () => {
+      const { service, connectionService } = await createService();
+      const confirmSpy = jest.spyOn(connectionService, 'confirmConnection');
+      const rejectSpy = jest.spyOn(connectionService, 'rejectConnection');
+      const answerSpy = jest
+        .spyOn(service, 'answerCallbackQuery')
+        .mockResolvedValue();
+
+      await service.processUpdate(makeCallbackUpdate('garbage'));
+
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(rejectSpy).not.toHaveBeenCalled();
+      expect(answerSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('sendConnectionConfirmationPrompt', () => {
+    it('sends Confirm/Reject buttons carrying the connection id', async () => {
+      const { service } = await createService();
+      const sendSpy = jest
+        .spyOn(service, 'sendMessage')
+        .mockResolvedValue({ ok: true });
+
+      await service.sendConnectionConfirmationPrompt(
+        '98765',
+        'conn1',
+        'me@gmail.com',
+      );
+
+      expect(sendSpy).toHaveBeenCalledWith(
+        '98765',
+        expect.stringContaining('me@gmail.com'),
+        {
+          replyMarkup: {
+            inline_keyboard: [
+              [
+                { text: 'Confirm', callback_data: 'c:conn1' },
+                { text: 'Reject', callback_data: 'r:conn1' },
+              ],
+            ],
+          },
+        },
+      );
+    });
+
+    it('keeps callback_data within Telegram 64-byte limit for a ulid', () => {
+      const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+      expect(Buffer.byteLength(`c:${ulid}`, 'utf8')).toBeLessThanOrEqual(64);
     });
   });
 });
