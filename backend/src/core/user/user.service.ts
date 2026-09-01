@@ -1,6 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service.js';
-import { User } from '../../generated/prisma/client.js';
+import { Prisma } from '../../generated/prisma/client.js';
+
+const include = { settings: true, connections: true } as const;
+
+export type UserWithRelations = Prisma.UserGetPayload<{
+  include: typeof include;
+}>;
 
 @Injectable()
 export class UserService {
@@ -8,26 +14,26 @@ export class UserService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async findByChatId(chatId: string): Promise<User | null> {
+  async findByChatId(chatId: string): Promise<UserWithRelations | null> {
     this.logger.debug(`Looking up user by chat=${chatId}`);
     return this.prisma.user.findUnique({
       where: { telegramChatId: chatId },
-      include: { preference: true, connections: true },
+      include,
     });
   }
 
-  async findById(id: string): Promise<User | null> {
+  async findById(id: string): Promise<UserWithRelations | null> {
     this.logger.debug(`Looking up user by id=${id}`);
     return this.prisma.user.findUnique({
       where: { id },
-      include: { preference: true, connections: true },
+      include,
     });
   }
 
-  async create(telegramChatId: string): Promise<User> {
+  async create(telegramChatId: string): Promise<UserWithRelations> {
     const user = await this.prisma.user.create({
-      data: { telegramChatId },
-      include: { preference: true, connections: true },
+      data: { telegramChatId, settings: { create: {} } },
+      include,
     });
     this.logger.log(`Created new user for chat=${telegramChatId}`);
     return user;
