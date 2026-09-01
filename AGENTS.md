@@ -33,6 +33,24 @@ staged and blocks the commit if they're out of sync.
 
 ---
 
+## Schema Discipline
+
+`schema.prisma` is a design artifact, not an append target. Patching it one column per feature
+cost a full remodel once already (see `project/lessons.md`, 2026-08-13). Before adding or
+changing any field:
+
+1. Nullable because it's genuinely optional at read time, or just convenient to write now?
+2. Closed set of values → `enum`, never a bare `String`.
+3. Every model carries `createdAt` + `updatedAt`.
+4. Every id pointing at another row has a real `@relation` with an explicit `onDelete`.
+
+Then read the generated `migration.sql` before it reaches a table with rows. Prisma Migrate
+diffs *shapes*, never data: it emits `DROP COLUMN` + `ADD COLUMN` for renames and type changes,
+which loses data and hard-fails on non-empty tables. `prisma migrate diff` reporting "no
+difference" says nothing about whether the path there destroys rows.
+
+---
+
 ## Tech Stack (locked — do not suggest alternatives)
 
 | Layer | Technology |

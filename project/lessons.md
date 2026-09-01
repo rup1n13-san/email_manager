@@ -93,6 +93,43 @@ match the account's actual site (check the Datadog app URL — `us5.datadoghq.co
 `datadoghq.eu`, etc.) rather than relying on the US1 default. A missing/wrong `DD_SITE`
 fails silently — nothing errors until you notice traces never show up in the UI.
 
+### [2026-08-13] | Prisma schema patched incrementally across 4 migrations — cost a full remodel and a destructive migration
+
+`Connection` and `EmailPreference` were never designed, only patched. Each feature added one
+column and moved on: `email` arrived nullable in `multi_account_connections` even though
+`/switch` and `/disconnect` address accounts *by email*; `provider` stayed a bare `String`
+while the code compared it to the literal `'google'` in four places; `EmailPreference` shipped
+with no `createdAt`/`updatedAt`; and `activeConnectionId` was first added as a scalar with no
+foreign key, so nothing stopped it pointing at a deleted or another user's connection. Fixing
+all of it at once meant a remodel touching 7 files, and a migration that had to `DELETE FROM
+"Connection"` because Prisma cannot rename or cast — it emits `DROP COLUMN` + `ADD COLUMN
+NOT NULL`, which both loses data and hard-fails on any table that has rows.
+
+**Rule:** Treat `schema.prisma` as a design artifact, not an append target. Before adding or
+changing a field, ask the four questions that were skipped here: is it nullable only because
+it's convenient right now, or genuinely optional at read time? is it a closed set that should
+be an enum instead of a `String`? does every model carry `createdAt`/`updatedAt`? does every
+id pointing at another row have a real `@relation` with an explicit `onDelete`? Then always
+read the generated `migration.sql` before it reaches a table with rows — Prisma Migrate diffs
+*shapes*, never data, so `prisma migrate diff` reporting "no difference" says nothing about
+whether the path there destroys rows.
+
+### [2026-08-27] | `main` sat 59 commits behind `dev` with a fake `EncryptionHelper`, and it became live risk the moment this repo was cited externally
+
+The 2026-07-24 lesson already established "never amend a merged branch, always PR" — but no
+rule ever said `main` had to stay in sync with `dev` on any particular cadence, so it silently
+drifted for a month while all real work landed on `dev`. That was harmless as long as nobody
+outside this repo looked at it. It stopped being harmless the day `main`'s URL got typed into
+an MLH Fellowship application as the code sample — GitHub shows `main` by default with no
+branch in the URL, and `main` still had the original `EncryptionHelper.encrypt() { return
+plaintext }` stub under a README already claiming finished OAuth/AI/encryption features.
+
+**Rule:** A public repo's `main` branch is a claim about the project, made continuously, to
+anyone who opens the URL — not just the branch that happens to hold the merged history. Once
+a repo is (or might be) referenced externally — a resume, an application, a portfolio link —
+treat `dev` lagging behind `main` by more than a feature or two as a bug, not backlog, and
+merge on a short cadence rather than batching 59 commits.
+
 ### Format
 ```
 [YYYY-MM-DD] | what went wrong | rule to avoid it next time

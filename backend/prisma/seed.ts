@@ -16,17 +16,10 @@ async function main() {
     },
   });
 
-  await prisma.emailPreference.upsert({
+  await prisma.userSettings.upsert({
     where: { userId: user.id },
     update: {},
-    create: {
-      userId: user.id,
-      checkIntervalHours: 4,
-      defaultInbox: 'PRIMARY',
-      aiEnabled: true,
-      aiModel: 'groq',
-      notificationStyle: 'detailed',
-    },
+    create: { userId: user.id },
   });
 
   console.log(`Seeded user: ${user.id}`);

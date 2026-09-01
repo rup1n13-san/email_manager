@@ -8,7 +8,7 @@ const mockUser = {
   telegramChatId: '12345',
   createdAt: new Date(),
   updatedAt: new Date(),
-  preference: null,
+  settings: null,
   connections: [],
 };
 
@@ -43,7 +43,7 @@ describe('UserService', () => {
       expect(result).toEqual(mockUser);
       expect(mockPrisma.user.findUnique).toHaveBeenCalledWith({
         where: { telegramChatId: '12345' },
-        include: { preference: true, connections: true },
+        include: { settings: true, connections: true },
       });
     });
 
@@ -65,7 +65,7 @@ describe('UserService', () => {
       expect(result).toEqual(mockUser);
       expect(mockPrisma.user.findUnique).toHaveBeenCalledWith({
         where: { id: 'user-1' },
-        include: { preference: true, connections: true },
+        include: { settings: true, connections: true },
       });
     });
 
@@ -87,8 +87,8 @@ describe('UserService', () => {
 
       expect(result).toEqual(newUser);
       expect(mockPrisma.user.create).toHaveBeenCalledWith({
-        data: { telegramChatId: '67890' },
-        include: { preference: true, connections: true },
+        data: { telegramChatId: '67890', settings: { create: {} } },
+        include: { settings: true, connections: true },
       });
     });
 

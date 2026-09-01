@@ -68,6 +68,38 @@ export class TelegramMessage {
   date!: number;
 }
 
+export class TelegramCallbackQueryFrom {
+  @IsInt()
+  id!: number;
+}
+
+export class TelegramCallbackQueryMessage {
+  @ValidateNested()
+  @Type(() => TelegramMessageChat)
+  chat!: TelegramMessageChat;
+
+  @IsInt()
+  message_id!: number;
+}
+
+export class TelegramCallbackQuery {
+  @IsString()
+  id!: string;
+
+  @ValidateNested()
+  @Type(() => TelegramCallbackQueryFrom)
+  from!: TelegramCallbackQueryFrom;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => TelegramCallbackQueryMessage)
+  message?: TelegramCallbackQueryMessage;
+
+  @IsOptional()
+  @IsString()
+  data?: string;
+}
+
 export class TelegramUpdate {
   @IsInt()
   update_id!: number;
@@ -76,4 +108,9 @@ export class TelegramUpdate {
   @ValidateNested()
   @Type(() => TelegramMessage)
   message?: TelegramMessage;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => TelegramCallbackQuery)
+  callback_query?: TelegramCallbackQuery;
 }

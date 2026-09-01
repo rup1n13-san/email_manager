@@ -1,6 +1,13 @@
 # Project Status — Email Manager v2
 
-_Last updated: 2026-08-06_
+_Last updated: 2026-08-27_
+
+**URGENT, read first:** `main` is 59 commits behind `dev` and is now a live risk, not just
+tech debt — this repo was submitted as Rupinie's MLH Fellowship code sample on 2026-08-27,
+and GitHub shows `main` by default to anyone opening the bare repo URL. `main` is still the
+original 9-commit scaffold with a fake `EncryptionHelper.encrypt()` (`return plaintext`,
+`// TODO: Implement AES-256-GCM`) under a README that already claims OAuth/AI-summary/
+encrypted storage. See `project/todo.md` for the fix.
 
 ## Current snapshot
 
@@ -19,6 +26,41 @@ _Last updated: 2026-08-06_
 | Infra | Heroku app `email-manager` + Heroku Postgres (`essential-0`, RDS-backed), CI deploys on push to `dev` |
 
 ## Sessions
+
+### [2026-08-27 #1] — Found `main`/`dev` gap after `email_manager` was submitted as MLH code sample
+
+**Context:** This came up from the `jobs_hunting` side, not this repo's own session — Rupinie
+was finishing an MLH Fellowship application and this repo was chosen (over `whisper-dictate`)
+as the code sample, on the grounds that he actually owns and reviewed every line here. The
+essays describe the real, `dev`-branch feature set: OAuth, encrypted token storage, multi-account
+`/list`/`/disconnect`, the Prisma production-incident fix, the CI lockfile-drift fix.
+
+**Found:** `main` (9 commits: `1e5ed55` through `074c391`, the initial NestJS scaffold) was
+never merged past PR #1. It still has the placeholder `EncryptionHelper`:
+```ts
+encrypt(plaintext: string): string {
+  return plaintext;  // TODO: Implement AES-256-GCM encrypt/decrypt
+}
+```
+under a README already claiming OAuth, AI summaries, and encrypted storage. `dev` is 59
+commits ahead (76 total), fully real — OAuth flow, Telegram webhook handling, AES-256-GCM
+actually implemented (`backend/src/common/helpers/encryption.ts`), multi-account
+`/list`/`/disconnect`, the whole Phase 4 core-flow set. None of that reached `main`.
+
+GitHub renders `main` by default for `github.com/rup1n13-san/email_manager` with no branch
+specified in the URL — so if the URL pasted into the MLH form was the bare repo root, a
+reviewer opening it sees the scaffold + a misleading README, not the project described in
+the application essays.
+
+**Not touched this pass:** the uncommitted WIP on `feat/backend/active-account-switch` (7
+modified files, Phase 4c) — unrelated, left exactly as it was.
+
+**Decisions locked:**
+- Fix goes through a proper PR (`dev → main`), not a force-push or fast-forward hack — same
+  rule as the 2026-07-24 lesson on not amending a merged branch.
+- The `feat/backend/active-account-switch` WIP stays parked; it is not part of this PR.
+
+**Next up:** see `project/todo.md` — this is now the top priority, ahead of Phase 4c.
 
 ### [2026-08-06 #7] — Diagnosed and fixed `prisma migrate deploy` P1001 blocking Heroku release phase
 
