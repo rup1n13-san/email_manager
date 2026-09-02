@@ -8,15 +8,15 @@ carries the real `EncryptionHelper`. Remaining optional item:
 - [ ] Update the MLH-side note in `jobs_hunting/ROADMAP.md` (search "CORRECTION DID NOT HOLD")
       and `jobs_hunting/.claude/PROJECT_STATUS.md` to close this out
 
-## Start here next session — Phase 4c
+## Start here next session
 
-```
-git checkout dev && git pull
-git checkout -b feat/backend/active-account-switch
-```
-Read `project/decisions/002-active-account-switch.md`, then the Phase 4c list below. Housekeeping
-first: `git branch -d feat/backend/oauth-state-confirmation` (merged in PR #17) and
-`git push origin --delete feat/backend/oauth-state-confirmation`.
+Phase 4c is code-complete on `feat/backend/active-account-switch` (not yet committed at time of
+writing — see `project/status.md`). Remaining before the PR: the manual end-to-end run against the
+live bot with two Gmail accounts.
+
+- [ ] `git push origin --delete feat/backend/oauth-state-confirmation` — merged in PR #17, deleted
+      locally, still on origin
+- [ ] Then: Phase 4b (AI tool-calling agent), which is what `getActiveTokens()` was built for
 
 ## Phase 0: Planning (session 2026-07-20)
 
@@ -121,21 +121,21 @@ only — never scopes the scheduler, which always covers every connected account
       `onDelete: SetNull` — already shipped in `20260813093609_fix_migration_active_account_id`.
       Note `onDelete: SetNull` means the DB already prevents a *dangling* pointer; the app-level
       fix-up below is about *reassigning* to another account, not preventing dangle.
-- [ ] `ConnectionService.getActive(chatId)` — resolution rules per decision 002
+- [x] `ConnectionService.getActive(chatId)` — resolution rules per decision 002
       (0/1/>1 connections, self-healing on null pointer), filtered to `CONFIRMED`
-- [ ] `ConnectionService.setActive(chatId, email?)` — switched/ambiguous result,
+- [x] `ConnectionService.setActive(chatId, email?)` — switched/ambiguous result,
       mirrors `disconnect()`'s discriminated union
-- [ ] `ConnectionService.confirmConnection()` — auto-activate on confirm when the user has no
+- [x] `ConnectionService.confirmConnection()` — auto-activate on confirm when the user has no
       active account yet (moved here from `storeTokens()`, see note 1 above)
-- [ ] `ConnectionService.disconnect()` — fix-up logic: reassign or clear
+- [x] `ConnectionService.disconnect()` — fix-up logic: reassign or clear
       `activeConnectionId` when the active connection is removed
-- [ ] `ConnectionService.getTokens()` → rename/refactor to `getActiveTokens(chatId)`,
+- [x] `ConnectionService.getTokens()` → rename/refactor to `getActiveTokens(chatId)`,
       resolving via `getActive()` instead of the current `.find()` first-match bug
-- [ ] `/switch` command in `TelegramService` — same tier as `/connect`/`/list`/
+- [x] `/switch` command in `TelegramService` — same tier as `/connect`/`/list`/
       `/disconnect`; bare `/switch` always shows the account list when >1 exist, no
       toggle shortcut at exactly 2
-- [ ] `/help` and `/start` welcome text — add `/switch` to the command list
-- [ ] Tests — getActive/setActive resolution rules, auto-activation on confirm,
+- [x] `/help` and `/start` welcome text — add `/switch` to the command list
+- [x] Tests — getActive/setActive resolution rules, auto-activation on confirm,
       disconnect fix-up (0/1/>1 remaining), /switch command handler
 
 ### Follow-ups carried over from PR #17 (small, independent of 4c)

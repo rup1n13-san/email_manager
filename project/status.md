@@ -1,6 +1,6 @@
 # Project Status — Email Manager v2
 
-_Last updated: 2026-09-01_
+_Last updated: 2026-09-02_
 
 **Resolved (2026-09-01):** the `main`/`dev` gap flagged below on 2026-08-27 is closed —
 `git rev-list --count origin/main..origin/dev` returns 0. `main` now carries the real
@@ -16,13 +16,72 @@ _Last updated: 2026-09-01_
 | Agent rules | Root `AGENTS.md` |
 | Tracking files | `project/` (status, todo, lessons, decisions) — committed |
 | V2 code | `backend/` — NestJS 11, Prisma 7, CI/CD wired, deployed on Heroku |
-| Branch | `dev` (active, merged PRs #1–#17) |
+| Branch | `feat/backend/active-account-switch` (off `dev`, merged PRs #1–#17) |
 | Deploy | https://email-manager-a30f36867c98.herokuapp.com/api/health — up, `web.1` running since 2026-08-06 11:07 (release v33), webhook confirmed responding (`/start` processed) |
-| Tests | 128 pass (9 suites), build+typecheck+lint clean |
+| Tests | 157 pass (9 suites), build+typecheck+lint clean |
 | Tag | `v1-python` — marks Python v1, pushed to origin |
 | Infra | Heroku app `email-manager` + Heroku Postgres (`essential-0`, RDS-backed), CI deploys on push to `dev` |
 
 ## Sessions
+
+### [2026-09-02 #1] — Phase 4c: active-account model + `/switch`
+
+**Context:** Resumed on 4c. Started from a question about reusing `UserService`'s shared
+`include = { settings: true, connections: true }` to carry the active connection on every user
+read. Rejected after analysis, and that analysis shaped the whole implementation.
+
+**Why the shared include was the wrong vehicle:** the active row is already inside `connections`
+and `activeConnectionId` is a scalar already on `User`, so resolving it is a `.find()`, not a join
+— an `activeConnection: true` include pays twice for the same row. Worse, `connections: true`
+drags `accessToken`/`refreshToken` ciphertext into every `/start` and `/connect` read that never
+uses it. And an include yields a *field*, while active-account is *policy* (CONFIRMED filter,
+self-heal, ambiguity at >1) — `user.activeConnection` applies none of it and is null for four
+different reasons at every call site.
+
+**What was kept from the idea:** the `as const` + `Prisma.UserGetPayload<typeof args>` idiom, which
+welds the payload type to the query. Now used per use case rather than once globally:
+`activeAccountArgs` in `connection.service.ts` selects three columns, pushes the
+`GOOGLE`+`CONFIRMED` filter into SQL (`listConnections`/`disconnect` still filter in JS), and
+selects no token columns at all.
+
+**Done:**
+- `getActive(chatId)` — the single resolution algorithm. 0 → `none`; 1 → active, self-healing the
+  pointer if unset; >1 with a valid pointer → active; >1 without → `ambiguous`. The self-heal write
+  is best-effort (a concurrent `/disconnect` can delete the row mid-read) and never fails the read.
+- `setActive(chatId, email?)` — mirrors `disconnect()`'s structure and error strings. Its write is
+  deliberately *not* swallowed: a user-requested switch must never claim success it didn't achieve.
+- `confirmConnection()` — auto-activates via `updateMany` guarded on `activeConnectionId: null`,
+  making "activate only if unset" one atomic statement.
+- `disconnect()` — returns `activeAfter`, re-resolved through `getActive()` rather than
+  re-implementing the rules locally.
+- `getTokens()` → `getActiveTokens()` — kills the `.find()` first-match bug decision 002 named.
+  Ciphertext is read in a second targeted query, only on the path that needs it.
+- `/switch` command, active marker in `/list`, reassignment line in `/disconnect`, `/help` +
+  `/start` text.
+
+**Current state:** branch `feat/backend/active-account-switch`, **uncommitted**. `tsc` exit 0, lint
+clean, build clean, 157 tests pass (9 suites) — 128 before, +29. Not yet exercised against the live
+bot; that manual run with two Gmail accounts is the remaining gate before a PR.
+
+**Decisions locked:**
+- `disconnect()` returns `activeAfter: ActiveAccountResult | null` rather than the planned
+  `nowActive: string | null`. A bare email cannot distinguish "nothing changed" from "you must now
+  pick" — reusing the resolution union keeps one vocabulary and lets Telegram render all three
+  outcomes. `null` means the removed account wasn't the active one.
+- When the active account is removed and **several** remain, the pointer stays unset and the user
+  is asked. Auto-picking a survivor would reintroduce exactly the arbitrary first-match this phase
+  existed to remove.
+- Token columns never enter the active-account resolution path. There is a test asserting the
+  select carries no `accessToken`/`refreshToken`, so the decision fails loudly if reverted.
+
+**Dangling / known:**
+- `feat/backend/oauth-state-confirmation` deleted locally, **still on origin** — the delete push was
+  blocked by the local permission classifier and needs to be run by hand.
+- ~13 other stale local branches from merged PRs, never cleaned up.
+- `CLAUDE.md` and `project/pr-message-dev-to-main.md` still untracked, unchanged from last session.
+
+**Next up:** manual end-to-end run, then PR; after that Phase 4b, which `getActiveTokens()` was
+shaped for.
 
 ### [2026-09-01 #1] — OAuth `state` was forgeable; added signed state + confirm-before-link (PR #17)
 
