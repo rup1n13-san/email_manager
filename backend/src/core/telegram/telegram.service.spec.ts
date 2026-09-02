@@ -70,6 +70,8 @@ async function createService(): Promise<{
         provide: ConnectionService,
         useValue: {
           listConnections: jest.fn<any>(),
+          getActive: jest.fn<any>(() => Promise.resolve({ status: 'none' })),
+          setActive: jest.fn<any>(),
           disconnect: jest.fn<any>(),
           confirmConnection: jest.fn<any>(),
           rejectConnection: jest.fn<any>(),
@@ -520,6 +522,136 @@ describe('TelegramService', () => {
         expect(message).toContain('2. b@x.com');
         expect(message).toContain('Use /disconnect <email> to remove one.');
       });
+
+      it('marks the active account and offers /switch', async () => {
+        const { service, connectionService } = await createService();
+        jest.spyOn(connectionService, 'listConnections').mockResolvedValue([
+          { email: 'a@x.com', providerAccountId: 'gid-1' },
+          { email: 'b@x.com', providerAccountId: 'gid-2' },
+        ]);
+        jest.spyOn(connectionService, 'getActive').mockResolvedValue({
+          status: 'active',
+          account: { id: 'c2', email: 'b@x.com', providerAccountId: 'gid-2' },
+        });
+        const sendSpy = jest
+          .spyOn(service, 'sendMessage')
+          .mockResolvedValue({ ok: true });
+
+        await service.processUpdate(
+          makeUpdate({
+            text: '/list',
+            entities: [{ type: 'bot_command', offset: 0, length: 5 }],
+          }),
+        );
+
+        const message = sendSpy.mock.calls[0][1];
+        expect(message).toContain('1. a@x.com\n');
+        expect(message).toContain('2. b@x.com  (active)');
+        expect(message).toContain('Use /switch <email> to change');
+      });
+
+      it('says no account is active yet when the pointer is unset', async () => {
+        const { service, connectionService } = await createService();
+        jest.spyOn(connectionService, 'listConnections').mockResolvedValue([
+          { email: 'a@x.com', providerAccountId: 'gid-1' },
+          { email: 'b@x.com', providerAccountId: 'gid-2' },
+        ]);
+        const sendSpy = jest
+          .spyOn(service, 'sendMessage')
+          .mockResolvedValue({ ok: true });
+
+        await service.processUpdate(
+          makeUpdate({
+            text: '/list',
+            entities: [{ type: 'bot_command', offset: 0, length: 5 }],
+          }),
+        );
+
+        const message = sendSpy.mock.calls[0][1];
+        expect(message).not.toContain('(active)');
+        expect(message).toContain('No active account yet');
+      });
+    });
+
+    describe('/switch', () => {
+      const switchUpdate = (text: string) =>
+        makeUpdate({
+          text,
+          entities: [{ type: 'bot_command', offset: 0, length: 7 }],
+        });
+
+      it('confirms the account it switched to', async () => {
+        const { service, connectionService } = await createService();
+        const setActiveSpy = jest
+          .spyOn(connectionService, 'setActive')
+          .mockResolvedValue({ status: 'switched', email: 'b@x.com' });
+        const sendSpy = jest
+          .spyOn(service, 'sendMessage')
+          .mockResolvedValue({ ok: true });
+
+        const result = await service.processUpdate(
+          switchUpdate('/switch b@x.com'),
+        );
+
+        expect(result).toEqual({ ok: true });
+        expect(setActiveSpy).toHaveBeenCalledWith('98765', 'b@x.com');
+        expect(sendSpy).toHaveBeenCalledWith('98765', 'Now using b@x.com.');
+      });
+
+      it('passes no email through when called bare', async () => {
+        const { service, connectionService } = await createService();
+        const setActiveSpy = jest
+          .spyOn(connectionService, 'setActive')
+          .mockResolvedValue({ status: 'switched', email: 'a@x.com' });
+        jest.spyOn(service, 'sendMessage').mockResolvedValue({ ok: true });
+
+        await service.processUpdate(switchUpdate('/switch'));
+
+        expect(setActiveSpy).toHaveBeenCalledWith('98765', undefined);
+      });
+
+      it('lists the accounts to choose from when the request is ambiguous', async () => {
+        const { service, connectionService } = await createService();
+        jest.spyOn(connectionService, 'setActive').mockResolvedValue({
+          status: 'ambiguous',
+          accounts: [
+            { id: 'c1', email: 'a@x.com', providerAccountId: 'gid-1' },
+            { id: 'c2', email: 'b@x.com', providerAccountId: 'gid-2' },
+          ],
+        });
+        const sendSpy = jest
+          .spyOn(service, 'sendMessage')
+          .mockResolvedValue({ ok: true });
+
+        await service.processUpdate(switchUpdate('/switch'));
+
+        const message = sendSpy.mock.calls[0][1];
+        expect(message).toContain('- a@x.com');
+        expect(message).toContain('- b@x.com');
+        expect(message).toContain('Reply with /switch <email>');
+      });
+
+      it('relays a NotFoundException as a plain chat message', async () => {
+        const { service, connectionService } = await createService();
+        jest
+          .spyOn(connectionService, 'setActive')
+          .mockRejectedValue(
+            new NotFoundException('No connected account found for z@x.com.'),
+          );
+        const sendSpy = jest
+          .spyOn(service, 'sendMessage')
+          .mockResolvedValue({ ok: true });
+
+        const result = await service.processUpdate(
+          switchUpdate('/switch z@x.com'),
+        );
+
+        expect(result).toEqual({ ok: true });
+        expect(sendSpy).toHaveBeenCalledWith(
+          '98765',
+          'No connected account found for z@x.com.',
+        );
+      });
     });
 
     describe('/disconnect', () => {
@@ -554,6 +686,7 @@ describe('TelegramService', () => {
           status: 'disconnected',
           email: 'a@x.com',
           revoked: true,
+          activeAfter: null,
         });
         const sendSpy = jest
           .spyOn(service, 'sendMessage')
@@ -583,6 +716,7 @@ describe('TelegramService', () => {
           status: 'disconnected',
           email: 'a@x.com',
           revoked: false,
+          activeAfter: null,
         });
         const sendSpy = jest
           .spyOn(service, 'sendMessage')
@@ -627,12 +761,70 @@ describe('TelegramService', () => {
         expect(message).toContain('/disconnect <email>');
       });
 
+      it('names the newly active account when the active one was removed', async () => {
+        const { service, connectionService } = await createService();
+        jest.spyOn(connectionService, 'disconnect').mockResolvedValue({
+          status: 'disconnected',
+          email: 'a@x.com',
+          revoked: true,
+          activeAfter: {
+            status: 'active',
+            account: { id: 'c2', email: 'b@x.com', providerAccountId: 'gid-2' },
+          },
+        });
+        const sendSpy = jest
+          .spyOn(service, 'sendMessage')
+          .mockResolvedValue({ ok: true });
+
+        await service.processUpdate(
+          makeUpdate({
+            text: '/disconnect a@x.com',
+            entities: [{ type: 'bot_command', offset: 0, length: 11 }],
+          }),
+        );
+
+        const message = sendSpy.mock.calls[0][1];
+        expect(message).toContain('Disconnected a@x.com');
+        expect(message).toContain('Now using b@x.com.');
+      });
+
+      it('asks the user to pick when several accounts remain', async () => {
+        const { service, connectionService } = await createService();
+        jest.spyOn(connectionService, 'disconnect').mockResolvedValue({
+          status: 'disconnected',
+          email: 'a@x.com',
+          revoked: true,
+          activeAfter: {
+            status: 'ambiguous',
+            accounts: [
+              { id: 'c2', email: 'b@x.com', providerAccountId: 'gid-2' },
+              { id: 'c3', email: 'c@x.com', providerAccountId: 'gid-3' },
+            ],
+          },
+        });
+        const sendSpy = jest
+          .spyOn(service, 'sendMessage')
+          .mockResolvedValue({ ok: true });
+
+        await service.processUpdate(
+          makeUpdate({
+            text: '/disconnect a@x.com',
+            entities: [{ type: 'bot_command', offset: 0, length: 11 }],
+          }),
+        );
+
+        const message = sendSpy.mock.calls[0][1];
+        expect(message).toContain('You have 2 accounts left');
+        expect(message).toContain('/switch <email>');
+      });
+
       it('passes the email argument through to ConnectionService.disconnect', async () => {
         const { service, connectionService } = await createService();
         jest.spyOn(connectionService, 'disconnect').mockResolvedValue({
           status: 'disconnected',
           email: 'b@x.com',
           revoked: true,
+          activeAfter: null,
         });
         jest.spyOn(service, 'sendMessage').mockResolvedValue({ ok: true });
 

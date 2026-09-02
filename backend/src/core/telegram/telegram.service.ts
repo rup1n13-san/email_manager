@@ -63,6 +63,8 @@ export class TelegramService {
         return this.handleList(chatId);
       case '/disconnect':
         return this.handleDisconnect(chatId, parts[1]);
+      case '/switch':
+        return this.handleSwitch(chatId, parts[1]);
       default:
         await this.sendMessage(chatId, `Unknown command: ${command}`);
         return { ok: true };
@@ -90,6 +92,7 @@ export class TelegramService {
         `Here's what I can do:\n` +
         `/connect — Link your Gmail account\n` +
         `/list — Show your connected Gmail accounts\n` +
+        `/switch — Choose which account I use\n` +
         `/disconnect — Remove your Gmail connection\n` +
         `/search — Search your emails\n` +
         `/write — Send an email\n` +
@@ -126,7 +129,10 @@ export class TelegramService {
   }
 
   private async handleList(chatId: string): Promise<{ ok: boolean }> {
-    const connections = await this.connectionService.listConnections(chatId);
+    const [connections, active] = await Promise.all([
+      this.connectionService.listConnections(chatId),
+      this.connectionService.getActive(chatId),
+    ]);
 
     if (connections.length === 0) {
       await this.sendMessage(
@@ -136,18 +142,56 @@ export class TelegramService {
       return { ok: true };
     }
 
-    const lines = connections.map(
-      (c, i) =>
-        `${i + 1}. ${c.email ?? '(email unknown — reconnect with /connect to refresh)'}`,
-    );
+    const activeEmail =
+      active.status === 'active' ? active.account.email : null;
+    const lines = connections.map((c, i) => {
+      const label =
+        c.email ?? '(email unknown — reconnect with /connect to refresh)';
+      return `${i + 1}. ${label}${c.email === activeEmail ? '  (active)' : ''}`;
+    });
+
+    const footer =
+      connections.length > 1
+        ? `${
+            activeEmail
+              ? 'Use /switch <email> to change the active account.'
+              : 'No active account yet — use /switch <email> to pick one.'
+          }\nUse /disconnect <email> to remove one.`
+        : 'Use /disconnect to remove it.';
+
     await this.sendMessage(
       chatId,
-      `Connected Gmail accounts:\n\n${lines.join('\n')}\n\n` +
-        (connections.length > 1
-          ? 'Use /disconnect <email> to remove one.'
-          : 'Use /disconnect to remove it.'),
+      `Connected Gmail accounts:\n\n${lines.join('\n')}\n\n${footer}`,
     );
     return { ok: true };
+  }
+
+  private async handleSwitch(
+    chatId: string,
+    emailArg?: string,
+  ): Promise<{ ok: boolean }> {
+    try {
+      const result = await this.connectionService.setActive(chatId, emailArg);
+
+      if (result.status === 'ambiguous') {
+        const lines = result.accounts.map((a) => `- ${a.email}`);
+        await this.sendMessage(
+          chatId,
+          `Which account should I use?\n\n${lines.join('\n')}\n\n` +
+            `Reply with /switch <email>`,
+        );
+        return { ok: true };
+      }
+
+      await this.sendMessage(chatId, `Now using ${result.email}.`);
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        await this.sendMessage(chatId, error.message);
+        return { ok: true };
+      }
+      throw error;
+    }
   }
 
   private async handleDisconnect(
@@ -170,13 +214,23 @@ export class TelegramService {
       }
 
       const label = result.email ?? 'that account';
-      await this.sendMessage(
-        chatId,
+      const parts = [
         result.revoked
           ? `Disconnected ${label}. Google access has been revoked.`
           : `Disconnected ${label} locally, but revoking Google access failed. ` +
-              `Please remove it manually at https://myaccount.google.com/permissions`,
-      );
+            `Please remove it manually at https://myaccount.google.com/permissions`,
+      ];
+
+      if (result.activeAfter?.status === 'active') {
+        parts.push(`Now using ${result.activeAfter.account.email}.`);
+      } else if (result.activeAfter?.status === 'ambiguous') {
+        parts.push(
+          `You have ${result.activeAfter.accounts.length} accounts left — ` +
+            `use /switch <email> to pick the active one.`,
+        );
+      }
+
+      await this.sendMessage(chatId, parts.join('\n\n'));
       return { ok: true };
     } catch (error) {
       if (error instanceof NotFoundException) {
@@ -195,6 +249,7 @@ export class TelegramService {
         `Commands:\n` +
         `/connect — Link Gmail\n` +
         `/list — Show connected Gmail accounts\n` +
+        `/switch — Choose which account I use\n` +
         `/disconnect — Unlink Gmail\n` +
         `/search <query> — Search emails\n` +
         `/write to:... subject:... body:... — Send email\n` +
