@@ -1,13 +1,10 @@
 # Project Status — Email Manager v2
 
-_Last updated: 2026-08-27_
+_Last updated: 2026-09-01_
 
-**URGENT, read first:** `main` is 59 commits behind `dev` and is now a live risk, not just
-tech debt — this repo was submitted as Rupinie's MLH Fellowship code sample on 2026-08-27,
-and GitHub shows `main` by default to anyone opening the bare repo URL. `main` is still the
-original 9-commit scaffold with a fake `EncryptionHelper.encrypt()` (`return plaintext`,
-`// TODO: Implement AES-256-GCM`) under a README that already claims OAuth/AI-summary/
-encrypted storage. See `project/todo.md` for the fix.
+**Resolved (2026-09-01):** the `main`/`dev` gap flagged below on 2026-08-27 is closed —
+`git rev-list --count origin/main..origin/dev` returns 0. `main` now carries the real
+`EncryptionHelper`. No action left.
 
 ## Current snapshot
 
@@ -19,13 +16,77 @@ encrypted storage. See `project/todo.md` for the fix.
 | Agent rules | Root `AGENTS.md` |
 | Tracking files | `project/` (status, todo, lessons, decisions) — committed |
 | V2 code | `backend/` — NestJS 11, Prisma 7, CI/CD wired, deployed on Heroku |
-| Branch | `dev` (active, merged PRs #1–#14) |
+| Branch | `dev` (active, merged PRs #1–#17) |
 | Deploy | https://email-manager-a30f36867c98.herokuapp.com/api/health — up, `web.1` running since 2026-08-06 11:07 (release v33), webhook confirmed responding (`/start` processed) |
-| Tests | 63 pass (7 suites), build+typecheck+lint clean |
+| Tests | 128 pass (9 suites), build+typecheck+lint clean |
 | Tag | `v1-python` — marks Python v1, pushed to origin |
 | Infra | Heroku app `email-manager` + Heroku Postgres (`essential-0`, RDS-backed), CI deploys on push to `dev` |
 
 ## Sessions
+
+### [2026-09-01 #1] — OAuth `state` was forgeable; added signed state + confirm-before-link (PR #17)
+
+**Context:** Started as a question about `Prisma.UserGetPayload`, turned into an audit of the
+OAuth callback. Found that `state` was just the raw Telegram `chatId`, forwarded unchanged
+through `buildGoogleOAuthUrl` and trusted blindly on the way back.
+
+**Found:** anyone who knows a target's chat id (visible in group chats, forwarded messages)
+could complete their own Google consent, edit `state` to the victim's chat id, and have their
+Gmail linked to the victim's account. `oauth.service.ts` passed `state` straight into
+`storeTokens()` as the chat id, with no validation of any kind.
+
+**Done:**
+- `backend/src/common/helpers/oauth-state.ts` (new) — `state` is now an AES-256-GCM blob
+  carrying `{chatId, provider, nonce, iat}`, reusing the existing `EncryptionHelper` and
+  `ENCRYPTION_KEY`. Forged/tampered/cross-provider/>10min states fail closed before Google
+  is contacted.
+- `Connection.status` (`PENDING_CONFIRMATION` | `CONFIRMED`, migration
+  `20260901115943_add_connection_status`) — a new account is written pending and only becomes
+  usable after the user taps Confirm in Telegram. Reject revokes at Google and deletes the row.
+  `/list`, `/disconnect` and token reads all filter to `CONFIRMED`.
+- `callback_query` handling in `TelegramService` (Confirm/Reject inline buttons,
+  `answerCallbackQuery`, `editMessageReplyMarkup`), private-chat-only guard, `/connect` now
+  creates the user if `/start` was never run.
+- `sweepStalePending()` on the existing 4-minute scheduler tick — abandoned confirmations are
+  revoked and deleted after 10 minutes.
+- `sendMessage` no longer retries 429/5xx as if they were parse-mode errors.
+
+**Current state:** PR #17 merged into `dev` (`e7bd8c2`), 7 commits, 25 files, +1674/−165.
+`tsc` exit 0, 128 tests pass (9 suites), lint clean, app boots with DI resolving. Verified
+end-to-end by hand against the live bot: connect → confirm prompt → Confirm → `/list`.
+
+**Decisions locked:**
+- Pending state lives as a `status` column on `Connection`, **not** a separate
+  `PendingConnection` table. A two-table draft was rejected on review: confirm would have
+  spanned two tables non-atomically (crash between "mark confirmed" and "write connection"
+  left a stuck state with no recovery path), and it doubled at-rest ciphertext for the same
+  secret. The `@@unique([userId, provider, providerAccountId])` constraint gives "supersede a
+  stale pending attempt" for free via the existing upsert.
+- `state` stays **stateless** (no nonce table). It is forgery-proof via the GCM auth tag but
+  **not replay-proof** — a captured state can be reused inside its 10-minute TTL. The
+  confirm/reject step is the actual last line of defence against that, not a UX flourish.
+  Do not "simplify" it away.
+- `storeTokens()`'s `update:` branch deliberately never touches `status`, so re-authorising an
+  already-confirmed account refreshes tokens without demoting it to pending.
+
+**Dangling / known:**
+- Branch `feat/backend/oauth-state-confirmation` is merged but not deleted locally or on
+  origin (was renamed from `feat/backend/active-account-switch`, which never described its
+  contents).
+- `CLAUDE.md` sits untracked at repo root — recovered from an old stash during this session,
+  duplicates `AGENTS.md`, deliberately not committed. `stash@{0}` (from
+  `fix/backend/boot-crash-and-logging`) is intact and was never consumed.
+- `project/pr-message-dev-to-main.md` still untracked, leftover from the previous session.
+- GitHub "Block command line pushes that expose my email" had to be disabled to push; commits
+  use `rupinie.adjohou@epitech.eu`, consistent with all prior history.
+- `setMyCommands` (the `/` autocomplete menu) is **not** wired yet — no `scripts/set-commands.sh`.
+- Two small follow-ups identified but not implemented: re-authorising a confirmed account still
+  sends the "not linked yet" prompt (should say "already connected, access refreshed"), and the
+  already-handled button path only shows a toast without stripping the buttons.
+
+**Next up:** Phase 4c (active-account switch) — see `project/todo.md`. Branch off `dev` as
+`feat/backend/active-account-switch`. Read the 4c-specific notes there first: the confirm gate
+changed where auto-activation belongs.
 
 ### [2026-08-27 #1] — Found `main`/`dev` gap after `email_manager` was submitted as MLH code sample
 

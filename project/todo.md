@@ -1,25 +1,22 @@
 # Todo — Email Manager v2
 
-## Phase X: URGENT — `main` is a live liability (session 2026-08-27)
+## Phase X: `main` liability — CLOSED 2026-09-01
 
-This repo is now Rupinie's submitted MLH Fellowship code sample. `main` still shows the
-9-commit scaffold with a fake `EncryptionHelper` under a README claiming finished features.
-Do this before anything else, including Phase 4c below.
+`dev → main` was merged; `git rev-list --count origin/main..origin/dev` returns 0 and `main`
+carries the real `EncryptionHelper`. Remaining optional item:
 
-- [ ] Confirm what URL was actually pasted into the MLH form's "Code Sample GitHub URL"
-      field — bare repo root, or `/tree/dev`. If it's the bare root, treat the next step as
-      time-critical (rolling admissions — a reviewer could open the link any day)
-- [ ] Check `git status` on whatever's currently checked out before touching branches — there
-      is uncommitted WIP on `feat/backend/active-account-switch` (7 files) that must not be
-      lost or dragged into this PR
-- [ ] Open `dev → main` PR: `gh pr create --base main --head dev` (no local checkout needed,
-      `dev` is already pushed and in sync with `origin/dev`) — merge it, not a force-push or
-      fast-forward hack
-- [ ] After merge, verify live: `git show main:backend/src/common/helpers/encryption.ts`
-      should show the real AES-256-GCM implementation, not the `return plaintext` stub, and
-      the repo's default-branch view on GitHub should match the README
-- [ ] Once confirmed, update the MLH-side note in `jobs_hunting/ROADMAP.md` (search
-      "CORRECTION DID NOT HOLD") and `jobs_hunting/.claude/PROJECT_STATUS.md` to close this out
+- [ ] Update the MLH-side note in `jobs_hunting/ROADMAP.md` (search "CORRECTION DID NOT HOLD")
+      and `jobs_hunting/.claude/PROJECT_STATUS.md` to close this out
+
+## Start here next session — Phase 4c
+
+```
+git checkout dev && git pull
+git checkout -b feat/backend/active-account-switch
+```
+Read `project/decisions/002-active-account-switch.md`, then the Phase 4c list below. Housekeeping
+first: `git branch -d feat/backend/oauth-state-confirmation` (merged in PR #17) and
+`git push origin --delete feat/backend/oauth-state-confirmation`.
 
 ## Phase 0: Planning (session 2026-07-20)
 
@@ -109,13 +106,27 @@ messages (any message that isn't `/start`, `/help`, `/connect`, `/list`,
 Mirrors `gh auth switch`. One Gmail account is "active" per user for interactive use
 only — never scopes the scheduler, which always covers every connected account.
 
-- [ ] Prisma migration — `activeConnectionId String?` on `User`, FK to `Connection`,
-      `onDelete: SetNull`
+**Read before starting — PR #17 changed two assumptions in decision 002:**
+1. A `Connection` is now written as `PENDING_CONFIRMATION` and only becomes usable when the
+   user taps Confirm. So "connecting auto-activates" must fire in **`confirmConnection()`**,
+   not in `storeTokens()` — activating on `storeTokens()` would make an unconfirmed account
+   active.
+2. Every active-account read must filter `status === CONFIRMED`, same as `getTokens()`,
+   `listConnections()` and `disconnect()` already do.
+3. `rejectConnection()` and `sweepStalePending()` only ever delete `PENDING_CONFIRMATION`
+   rows, and a pending row can never be active — so they need **no** active-pointer fix-up.
+   Only `disconnect()` does.
+
+- [x] Prisma migration — `activeConnectionId String?` on `User`, FK to `Connection`,
+      `onDelete: SetNull` — already shipped in `20260813093609_fix_migration_active_account_id`.
+      Note `onDelete: SetNull` means the DB already prevents a *dangling* pointer; the app-level
+      fix-up below is about *reassigning* to another account, not preventing dangle.
 - [ ] `ConnectionService.getActive(chatId)` — resolution rules per decision 002
-      (0/1/>1 connections, self-healing on null pointer)
+      (0/1/>1 connections, self-healing on null pointer), filtered to `CONFIRMED`
 - [ ] `ConnectionService.setActive(chatId, email?)` — switched/ambiguous result,
       mirrors `disconnect()`'s discriminated union
-- [ ] `ConnectionService.storeTokens()` — auto-activate the newly connected account
+- [ ] `ConnectionService.confirmConnection()` — auto-activate on confirm when the user has no
+      active account yet (moved here from `storeTokens()`, see note 1 above)
 - [ ] `ConnectionService.disconnect()` — fix-up logic: reassign or clear
       `activeConnectionId` when the active connection is removed
 - [ ] `ConnectionService.getTokens()` → rename/refactor to `getActiveTokens(chatId)`,
@@ -124,8 +135,26 @@ only — never scopes the scheduler, which always covers every connected account
       `/disconnect`; bare `/switch` always shows the account list when >1 exist, no
       toggle shortcut at exactly 2
 - [ ] `/help` and `/start` welcome text — add `/switch` to the command list
-- [ ] Tests — getActive/setActive resolution rules, storeTokens auto-activation,
+- [ ] Tests — getActive/setActive resolution rules, auto-activation on confirm,
       disconnect fix-up (0/1/>1 remaining), /switch command handler
+
+### Follow-ups carried over from PR #17 (small, independent of 4c)
+
+- [ ] Re-authorising an already-`CONFIRMED` account still sends the "this account is not
+      linked yet" prompt, and tapping Confirm silently no-ops. `storeTokens()` returns the
+      upserted row — branch on its `status` in `oauth.service.ts` and send "already connected,
+      access refreshed" (no buttons) when it comes back `CONFIRMED`
+- [ ] On the already-handled callback path, strip the buttons via `editMessageReplyMarkup` and
+      send a short chat message — right now it only shows a toast that is easy to miss
+- [ ] `scripts/set-commands.sh` + `npm run commands:set` — register the `/` autocomplete menu
+      via `setMyCommands`, scoped to `all_private_chats` to match the private-chat guard.
+      Mirror the `local | production` shape of `scripts/set-webhook.sh`. Add `/switch` when 4c
+      lands
+- [ ] Consider extracting a private `callApi(method, payload)` helper in `TelegramService` —
+      `sendMessage`/`sendTyping`/`answerCallbackQuery`/`editMessageReplyMarkup` all repeat the
+      token check + fetch + error handling. Telegraf/`nestjs-telegraf` was evaluated and
+      deferred: worth revisiting only when `/write` needs multi-step conversation state or
+      Gmail attachments need multipart upload
 
 ## Phase 5: Polish
 
