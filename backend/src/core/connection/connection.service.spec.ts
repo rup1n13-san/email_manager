@@ -11,6 +11,7 @@ const VALID_KEY =
 const mockUser = {
   id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
   telegramChatId: 'chat123',
+  activeConnectionId: null as string | null,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
@@ -33,6 +34,8 @@ function mockPrisma() {
   return {
     user: {
       findUnique: jest.fn<any>(),
+      update: jest.fn<any>(),
+      updateMany: jest.fn<any>(),
     },
     connection: {
       upsert: jest.fn<any>(),
@@ -73,6 +76,29 @@ describe('ConnectionService', () => {
     service = module.get<ConnectionService>(ConnectionService);
     jest.clearAllMocks();
   });
+
+  // Shape returned by the activeAccountArgs select — no token columns.
+  const first = {
+    id: mockConnection.id,
+    email: mockConnection.email,
+    providerAccountId: mockConnection.providerAccountId,
+  };
+  const second = {
+    id: 'c2',
+    email: 'second@x.com',
+    providerAccountId: 'gid-2',
+  };
+
+  function mockUserWith(
+    connections: (typeof first)[],
+    activeConnectionId: string | null = null,
+  ) {
+    prisma.user.findUnique.mockResolvedValue({
+      id: mockUser.id,
+      activeConnectionId,
+      connections,
+    });
+  }
 
   describe('storeTokens', () => {
     it('encrypts tokens and upserts connection', async () => {
@@ -166,57 +192,73 @@ describe('ConnectionService', () => {
     });
   });
 
-  describe('getTokens', () => {
-    it('returns decrypted tokens when connection exists', async () => {
-      const encryptedAccess = encryption.encrypt('decrypted-access');
-      const encryptedRefresh = encryption.encrypt('decrypted-refresh');
-
-      prisma.user.findUnique.mockResolvedValue({
-        ...mockUser,
-        connections: [
-          {
-            ...mockConnection,
-            accessToken: encryptedAccess,
-            refreshToken: encryptedRefresh,
-          },
-        ],
+  describe('getActiveTokens', () => {
+    it('decrypts the tokens of the resolved active account', async () => {
+      mockUserWith([first, second], second.id);
+      prisma.connection.findUnique.mockResolvedValue({
+        accessToken: encryption.encrypt('decrypted-access'),
+        refreshToken: encryption.encrypt('decrypted-refresh'),
+        expiresAt: mockConnection.expiresAt,
       });
 
-      const result = await service.getTokens('chat123');
+      const result = await service.getActiveTokens('chat123');
 
       expect(result).toEqual({
-        accessToken: 'decrypted-access',
-        refreshToken: 'decrypted-refresh',
-        expiresAt: expect.any(Date),
+        status: 'active',
+        account: second,
+        tokens: {
+          accessToken: 'decrypted-access',
+          refreshToken: 'decrypted-refresh',
+          expiresAt: mockConnection.expiresAt,
+        },
+      });
+      expect(prisma.connection.findUnique).toHaveBeenCalledWith({
+        where: { id: second.id },
+        select: { accessToken: true, refreshToken: true, expiresAt: true },
       });
     });
 
-    it('returns null when no connection exists', async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        ...mockUser,
-        connections: [],
+    it('handles an account that never returned a refresh token', async () => {
+      mockUserWith([first], first.id);
+      prisma.connection.findUnique.mockResolvedValue({
+        accessToken: encryption.encrypt('only-access'),
+        refreshToken: null,
+        expiresAt: mockConnection.expiresAt,
       });
 
-      const result = await service.getTokens('chat123');
-      expect(result).toBeNull();
-    });
+      const result = await service.getActiveTokens('chat123');
 
-    it('ignores a connection still pending confirmation', async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        ...mockUser,
-        connections: [{ ...mockConnection, status: 'PENDING_CONFIRMATION' }],
+      expect(result).toMatchObject({
+        tokens: { accessToken: 'only-access', refreshToken: null },
       });
-
-      const result = await service.getTokens('chat123');
-      expect(result).toBeNull();
     });
 
-    it('throws when user not found', async () => {
-      prisma.user.findUnique.mockResolvedValue(null);
+    it('passes through none when nothing is connected', async () => {
+      mockUserWith([]);
 
-      await expect(service.getTokens('unknown')).rejects.toThrow(
-        'User not found',
-      );
+      expect(await service.getActiveTokens('chat123')).toEqual({
+        status: 'none',
+      });
+      expect(prisma.connection.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('passes through ambiguous instead of picking an inbox', async () => {
+      mockUserWith([first, second], null);
+
+      expect(await service.getActiveTokens('chat123')).toEqual({
+        status: 'ambiguous',
+        accounts: [first, second],
+      });
+      expect(prisma.connection.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('returns none when the account is deleted between resolve and read', async () => {
+      mockUserWith([first], first.id);
+      prisma.connection.findUnique.mockResolvedValue(null);
+
+      expect(await service.getActiveTokens('chat123')).toEqual({
+        status: 'none',
+      });
     });
   });
 
@@ -264,6 +306,167 @@ describe('ConnectionService', () => {
       expect(result).toEqual([
         { email: 'test@example.com', providerAccountId: 'google-user-123' },
       ]);
+    });
+  });
+
+  describe('getActive', () => {
+    it('filters to confirmed google accounts in the query and selects no tokens', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await service.getActive('chat123');
+
+      const args = prisma.user.findUnique.mock.calls[0][0] as {
+        select: {
+          connections: {
+            where: Record<string, unknown>;
+            select: Record<string, unknown>;
+          };
+        };
+      };
+      expect(args.select.connections.where).toEqual({
+        provider: 'GOOGLE',
+        status: 'CONFIRMED',
+      });
+      expect(args.select.connections.select).not.toHaveProperty('accessToken');
+      expect(args.select.connections.select).not.toHaveProperty('refreshToken');
+    });
+
+    it('returns none when the user does not exist', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      expect(await service.getActive('unknown')).toEqual({ status: 'none' });
+    });
+
+    it('returns none when the user has no confirmed accounts', async () => {
+      mockUserWith([]);
+
+      expect(await service.getActive('chat123')).toEqual({ status: 'none' });
+    });
+
+    it('returns the only account without writing when the pointer is already correct', async () => {
+      mockUserWith([first], first.id);
+
+      expect(await service.getActive('chat123')).toEqual({
+        status: 'active',
+        account: first,
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('adopts the only account and heals a null pointer', async () => {
+      mockUserWith([first], null);
+
+      expect(await service.getActive('chat123')).toEqual({
+        status: 'active',
+        account: first,
+      });
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: mockUser.id },
+        data: { activeConnectionId: first.id },
+      });
+    });
+
+    it('still returns the account when healing the pointer fails', async () => {
+      mockUserWith([first], null);
+      prisma.user.update.mockRejectedValue(new Error('row vanished'));
+
+      expect(await service.getActive('chat123')).toEqual({
+        status: 'active',
+        account: first,
+      });
+    });
+
+    it('returns the pointed-at account when several are connected', async () => {
+      mockUserWith([first, second], second.id);
+
+      expect(await service.getActive('chat123')).toEqual({
+        status: 'active',
+        account: second,
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('is ambiguous when several are connected and no pointer is set', async () => {
+      mockUserWith([first, second], null);
+
+      expect(await service.getActive('chat123')).toEqual({
+        status: 'ambiguous',
+        accounts: [first, second],
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('is ambiguous when the pointer no longer matches a confirmed account', async () => {
+      mockUserWith([first, second], 'deleted-or-pending-id');
+
+      expect(await service.getActive('chat123')).toEqual({
+        status: 'ambiguous',
+        accounts: [first, second],
+      });
+    });
+  });
+
+  describe('setActive', () => {
+    it('throws when the user does not exist', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await expect(service.setActive('unknown')).rejects.toThrow(
+        'You have no connected Gmail accounts.',
+      );
+    });
+
+    it('throws when the user has no confirmed accounts', async () => {
+      mockUserWith([]);
+
+      await expect(service.setActive('chat123')).rejects.toThrow(
+        'You have no connected Gmail accounts.',
+      );
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('switches to the only account when called bare', async () => {
+      mockUserWith([first], null);
+
+      expect(await service.setActive('chat123')).toEqual({
+        status: 'switched',
+        email: first.email,
+      });
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: mockUser.id },
+        data: { activeConnectionId: first.id },
+      });
+    });
+
+    it('lists instead of guessing when called bare with several accounts', async () => {
+      mockUserWith([first, second], first.id);
+
+      expect(await service.setActive('chat123')).toEqual({
+        status: 'ambiguous',
+        accounts: [first, second],
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('matches the requested email case-insensitively', async () => {
+      mockUserWith([first, second], first.id);
+
+      expect(await service.setActive('chat123', 'SECOND@X.com')).toEqual({
+        status: 'switched',
+        email: second.email,
+      });
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: mockUser.id },
+        data: { activeConnectionId: second.id },
+      });
+    });
+
+    it('throws when the email matches no connected account', async () => {
+      mockUserWith([first, second], first.id);
+
+      await expect(service.setActive('chat123', 'nope@x.com')).rejects.toThrow(
+        'No connected account found for nope@x.com.',
+      );
+      expect(prisma.user.update).not.toHaveBeenCalled();
     });
   });
 
@@ -329,6 +532,7 @@ describe('ConnectionService', () => {
         status: 'disconnected',
         email: conn.email,
         revoked: true,
+        activeAfter: null,
       });
     });
 
@@ -349,6 +553,7 @@ describe('ConnectionService', () => {
         status: 'disconnected',
         email: conn.email,
         revoked: false,
+        activeAfter: null,
       });
     });
 
@@ -401,6 +606,7 @@ describe('ConnectionService', () => {
         status: 'disconnected',
         email: connB.email,
         revoked: true,
+        activeAfter: null,
       });
     });
 
@@ -435,7 +641,83 @@ describe('ConnectionService', () => {
         status: 'disconnected',
         email: conn.email,
         revoked: true,
+        activeAfter: null,
       });
+    });
+
+    it('reports the survivor as newly active when the active account is removed', async () => {
+      const conn = encryptedConnection();
+      prisma.user.findUnique
+        .mockResolvedValueOnce({
+          ...mockUser,
+          activeConnectionId: conn.id,
+          connections: [
+            conn,
+            { ...encryptedConnection(), id: second.id, email: second.email },
+          ],
+        })
+        // getActive() re-resolves after the delete: one account left.
+        .mockResolvedValueOnce({
+          id: mockUser.id,
+          activeConnectionId: null,
+          connections: [second],
+        });
+      fetchSpy.mockResolvedValue({ ok: true } as Response);
+
+      const result = await service.disconnect('chat123', conn.email);
+
+      expect(result).toEqual({
+        status: 'disconnected',
+        email: conn.email,
+        revoked: true,
+        activeAfter: { status: 'active', account: second },
+      });
+    });
+
+    it('leaves the choice to the user when the active account is removed and several remain', async () => {
+      const conn = encryptedConnection();
+      const third = {
+        id: 'c3',
+        email: 'third@x.com',
+        providerAccountId: 'gid-3',
+      };
+      prisma.user.findUnique
+        .mockResolvedValueOnce({
+          ...mockUser,
+          activeConnectionId: conn.id,
+          connections: [conn, conn, conn],
+        })
+        .mockResolvedValueOnce({
+          id: mockUser.id,
+          activeConnectionId: null,
+          connections: [second, third],
+        });
+      fetchSpy.mockResolvedValue({ ok: true } as Response);
+
+      const result = await service.disconnect('chat123', conn.email);
+
+      expect(result).toEqual({
+        status: 'disconnected',
+        email: conn.email,
+        revoked: true,
+        activeAfter: { status: 'ambiguous', accounts: [second, third] },
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('does not re-resolve when the removed account was not the active one', async () => {
+      const conn = encryptedConnection();
+      prisma.user.findUnique.mockResolvedValue({
+        ...mockUser,
+        activeConnectionId: 'some-other-connection',
+        connections: [conn],
+      });
+      fetchSpy.mockResolvedValue({ ok: true } as Response);
+
+      const result = await service.disconnect('chat123');
+
+      expect(result).toMatchObject({ activeAfter: null });
+      expect(prisma.user.findUnique).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -458,6 +740,35 @@ describe('ConnectionService', () => {
         where: { id: mockConnection.id, status: 'PENDING_CONFIRMATION' },
         data: { status: 'CONFIRMED' },
       });
+    });
+
+    it('activates the account only if the user has none active yet', async () => {
+      prisma.connection.findUnique.mockResolvedValue({
+        ...mockConnection,
+        status: 'PENDING_CONFIRMATION',
+        user: { telegramChatId: 'chat123' },
+      });
+      prisma.connection.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.confirmConnection(mockConnection.id, 'chat123');
+
+      expect(prisma.user.updateMany).toHaveBeenCalledWith({
+        where: { id: mockConnection.userId, activeConnectionId: null },
+        data: { activeConnectionId: mockConnection.id },
+      });
+    });
+
+    it('does not touch the active pointer when the confirm was a no-op', async () => {
+      prisma.connection.findUnique.mockResolvedValue({
+        ...mockConnection,
+        status: 'PENDING_CONFIRMATION',
+        user: { telegramChatId: 'chat123' },
+      });
+      prisma.connection.updateMany.mockResolvedValue({ count: 0 });
+
+      await service.confirmConnection(mockConnection.id, 'chat123');
+
+      expect(prisma.user.updateMany).not.toHaveBeenCalled();
     });
 
     it('refuses when the requesting chat does not own the connection', async () => {

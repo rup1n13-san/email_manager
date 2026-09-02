@@ -4,6 +4,53 @@ _Errors encountered and rules to prevent recurrence._
 
 ---
 
+### [2026-09-01] | `tsconfig` `baseUrl` makes bare imports typecheck but fail at runtime
+
+`import { encodeOAuthState } from 'src/common/helpers/oauth-state.js'` passed `tsc --noEmit`
+cleanly because `tsconfig.json` sets `"baseUrl": "./"`. It then failed at runtime with
+`Cannot find module` — under Jest, `nest build` output, and production alike. `baseUrl` is a
+TypeScript type-resolution concept only; Node's ESM loader knows nothing about it and treats
+`src/...` as a bare package specifier. `tsc` passing is not evidence that an import resolves.
+
+**Rule:** In this repo always use relative imports (`../../common/helpers/x.js`). Never trust
+`tsc --noEmit` alone to validate a new import path — run the test suite or boot the app, which
+exercise real module resolution.
+
+### [2026-09-01] | Revoking before deleting lets a concurrent confirm win a dead grant
+
+`rejectConnection()` and `sweepStalePending()` originally called `revokeGoogleToken()` and
+*then* ran a status-guarded `deleteMany`. The delete is atomic; the revoke was not gated on it.
+If a user tapped Confirm at the same moment, confirm's `updateMany` flipped the row to
+`CONFIRMED` and the delete correctly no-opped — but the token had already been revoked at
+Google. Result: a `CONFIRMED` connection whose grant is dead, `/list` showing an account where
+every API call 401s, and nothing in the system knowing why.
+
+**Rule:** When an external side effect (revoke, refund, email) accompanies a DB state change,
+do the guarded DB write **first** and perform the side effect only if it reported `count === 1`.
+Whoever wins the atomic write owns the side effect.
+
+### [2026-09-01] | `git stash pop` grabs the newest stash, not "yours"
+
+Running `git stash -u` in a clean tree creates nothing, so a later `git stash pop` consumed a
+**pre-existing stash from a different branch and an earlier session**, dropping its untracked
+`CLAUDE.md` into the tree and conflicting on `project/status.md`/`todo.md`. Nothing was lost
+only because the conflicted pop keeps the entry — a clean pop would have silently consumed it.
+
+**Rule:** Run `git stash list` before any stash operation in this repo. Prefer
+`git stash push -m "<label>"` and pop by explicit ref (`git stash pop stash@{0}` after
+confirming the label), or avoid stashing entirely by committing WIP to a scratch branch.
+
+### [2026-09-01] | GitHub can reject a push over an email already public in the repo's history
+
+`GH007: Your push would publish a private email address` blocked a push whose commits used
+`rupinie.adjohou@epitech.eu` — the same address as all 59+ existing commits on `dev`/`main`.
+The account setting "Block command line pushes that expose my email" had been enabled after
+those commits were already public, so the protection blocked new work without hiding anything.
+
+**Rule:** If `GH007` appears on a repo whose history already carries that address, disabling
+the toggle at github.com/settings/emails is the correct fix — rewriting author emails on a few
+commits makes them inconsistent with the rest of the history for no privacy gain.
+
 ### [2026-07-22] | ESM + Prisma Client: `@prisma/client` named imports fail at runtime
 
 `import { PrismaClient } from '@prisma/client'` crashes with `does not provide an export named 'PrismaClient'` in ESM projects (`"type": "module"`). `@prisma/client` ships CJS. Its entry is `module.exports = { ...require() }` — Node's static CJS→ESM bridge cannot detect named exports from this dynamic spread pattern. The `PrismaClient` becomes invisible.
