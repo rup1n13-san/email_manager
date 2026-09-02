@@ -10,8 +10,54 @@ import {
 
 const PENDING_TTL_MS = 10 * 60_000;
 
+// Token columns are deliberately absent: only getActiveTokens() needs ciphertext.
+const activeAccountArgs = {
+  select: {
+    id: true,
+    activeConnectionId: true,
+    connections: {
+      where: {
+        provider: ConnectionProvider.GOOGLE,
+        status: ConnectionStatus.CONFIRMED,
+      },
+      select: { id: true, email: true, providerAccountId: true },
+      orderBy: { createdAt: 'asc' },
+    },
+  },
+} as const;
+
+export type ActiveAccount = Prisma.UserGetPayload<
+  typeof activeAccountArgs
+>['connections'][number];
+
+export type ActiveAccountResult =
+  | { status: 'active'; account: ActiveAccount }
+  | { status: 'none' }
+  | { status: 'ambiguous'; accounts: ActiveAccount[] };
+
+export interface ActiveTokens {
+  accessToken: string;
+  refreshToken: string | null;
+  expiresAt: Date;
+}
+
+export type ActiveTokensResult =
+  | { status: 'active'; account: ActiveAccount; tokens: ActiveTokens }
+  | { status: 'none' }
+  | { status: 'ambiguous'; accounts: ActiveAccount[] };
+
+export type SetActiveResult =
+  | { status: 'switched'; email: string }
+  | { status: 'ambiguous'; accounts: ActiveAccount[] };
+
 export type DisconnectResult =
-  | { status: 'disconnected'; email: string; revoked: boolean }
+  | {
+      status: 'disconnected';
+      email: string;
+      revoked: boolean;
+      // null when the removed account was not the active one — nothing changed.
+      activeAfter: ActiveAccountResult | null;
+    }
   | {
       status: 'ambiguous';
       accounts: { email: string; providerAccountId: string }[];
@@ -73,27 +119,27 @@ export class ConnectionService {
     return result;
   }
 
-  async getTokens(chatId: string) {
-    this.logger.debug(`Fetching tokens for chat=${chatId}`);
-    const user = await this.prisma.user.findUnique({
-      where: { telegramChatId: chatId },
-      include: { connections: true },
-    });
-    if (!user) throw new NotFoundException('User not found');
+  async getActiveTokens(chatId: string): Promise<ActiveTokensResult> {
+    const active = await this.getActive(chatId);
+    if (active.status !== 'active') return active;
 
-    const connection = user.connections.find(
-      (c) =>
-        c.provider === ConnectionProvider.GOOGLE &&
-        c.status === ConnectionStatus.CONFIRMED,
-    );
-    if (!connection) return null;
+    const connection = await this.prisma.connection.findUnique({
+      where: { id: active.account.id },
+      select: { accessToken: true, refreshToken: true, expiresAt: true },
+    });
+    // Deleted between resolving and reading: no usable account, not an error.
+    if (!connection) return { status: 'none' };
 
     return {
-      accessToken: this.encryption.decrypt(connection.accessToken),
-      refreshToken: connection.refreshToken
-        ? this.encryption.decrypt(connection.refreshToken)
-        : null,
-      expiresAt: connection.expiresAt,
+      status: 'active',
+      account: active.account,
+      tokens: {
+        accessToken: this.encryption.decrypt(connection.accessToken),
+        refreshToken: connection.refreshToken
+          ? this.encryption.decrypt(connection.refreshToken)
+          : null,
+        expiresAt: connection.expiresAt,
+      },
     };
   }
 
@@ -113,6 +159,83 @@ export class ConnectionService {
           c.status === ConnectionStatus.CONFIRMED,
       )
       .map((c) => ({ email: c.email, providerAccountId: c.providerAccountId }));
+  }
+
+  async getActive(chatId: string): Promise<ActiveAccountResult> {
+    const user = await this.prisma.user.findUnique({
+      where: { telegramChatId: chatId },
+      ...activeAccountArgs,
+    });
+    if (!user || user.connections.length === 0) return { status: 'none' };
+
+    const accounts = user.connections;
+
+    // A lone account is active by definition, even if the pointer was never set
+    // or was cleared by onDelete: SetNull.
+    if (accounts.length === 1) {
+      const account = accounts[0];
+      if (user.activeConnectionId !== account.id) {
+        await this.healActivePointer(user.id, account.id);
+      }
+      return { status: 'active', account };
+    }
+
+    const account = accounts.find((c) => c.id === user.activeConnectionId);
+    return account
+      ? { status: 'active', account }
+      : { status: 'ambiguous', accounts };
+  }
+
+  async setActive(chatId: string, email?: string): Promise<SetActiveResult> {
+    const user = await this.prisma.user.findUnique({
+      where: { telegramChatId: chatId },
+      ...activeAccountArgs,
+    });
+    const accounts = user?.connections ?? [];
+
+    if (!user || accounts.length === 0) {
+      throw new NotFoundException('You have no connected Gmail accounts.');
+    }
+
+    let target = accounts[0];
+    if (email) {
+      const match = accounts.find(
+        (c) => c.email.toLowerCase() === email.toLowerCase(),
+      );
+      if (!match) {
+        throw new NotFoundException(`No connected account found for ${email}.`);
+      }
+      target = match;
+    } else if (accounts.length > 1) {
+      return { status: 'ambiguous', accounts };
+    }
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { activeConnectionId: target.id },
+    });
+    this.logger.log(`Active connection set to id=${target.id} chat=${chatId}`);
+
+    return { status: 'switched', email: target.email };
+  }
+
+  // Best-effort: a concurrent /disconnect can delete the row, and a failed repair
+  // must not break the read that triggered it.
+  private async healActivePointer(
+    userId: string,
+    connectionId: string,
+  ): Promise<void> {
+    try {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { activeConnectionId: connectionId },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Could not set active connection ${connectionId} for user=${userId}: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   async disconnect(chatId: string, email?: string): Promise<DisconnectResult> {
@@ -149,6 +272,7 @@ export class ConnectionService {
       };
     }
 
+    const wasActive = user?.activeConnectionId === target.id;
     const refreshToken = target.refreshToken
       ? this.encryption.decrypt(target.refreshToken)
       : null;
@@ -169,7 +293,16 @@ export class ConnectionService {
       `Disconnected connection id=${target.id} chat=${chatId} revoked=${revoked}`,
     );
 
-    return { status: 'disconnected', email: target.email, revoked };
+    // Re-resolving instead of picking a survivor: when several remain the pointer
+    // deliberately stays unset so the user chooses.
+    const activeAfter = wasActive ? await this.getActive(chatId) : null;
+
+    return {
+      status: 'disconnected',
+      email: target.email,
+      revoked,
+      activeAfter,
+    };
   }
 
   async confirmConnection(
@@ -189,6 +322,12 @@ export class ConnectionService {
       data: { status: ConnectionStatus.CONFIRMED },
     });
     if (count === 0) return { ok: false };
+
+    // The null guard makes "activate if unset" atomic — no race with a /switch.
+    await this.prisma.user.updateMany({
+      where: { id: connection.userId, activeConnectionId: null },
+      data: { activeConnectionId: id },
+    });
 
     this.logger.log(`Confirmed connection id=${id} chat=${chatId}`);
     return { ok: true, email: connection.email };
