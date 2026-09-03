@@ -75,4 +75,52 @@ describe('buildRawEmail', () => {
     const decoded = decodeRaw(raw);
     expect(decoded).toContain('To: recipient@x.com');
   });
+
+  it('leaves an ASCII "Name <addr>" To header untouched', () => {
+    const raw = buildRawEmail({
+      to: 'Jane Doe <jane@example.com>',
+      subject: 'S',
+      body: 'B',
+    });
+
+    const decoded = decodeRaw(raw);
+    expect(decoded).toContain('To: Jane Doe <jane@example.com>');
+  });
+
+  it('encodes only the display-name phrase of a non-ASCII "Name <addr>" To header, leaving the address parseable', () => {
+    const raw = buildRawEmail({
+      to: '"Réunion Bot" <bot@example.com>',
+      subject: 'S',
+      body: 'B',
+    });
+
+    const decoded = decodeRaw(raw);
+    const toLine = decoded
+      .split('\r\n')
+      .find((line) => line.startsWith('To:'))!;
+    const value = toLine.slice('To: '.length);
+
+    expect(value).toMatch(/^=\?UTF-8\?B\?.+\?= <bot@example\.com>$/);
+    const [, encodedName] = /^(=\?UTF-8\?B\?.+\?=) <bot@example\.com>$/.exec(
+      value,
+    )!;
+    expect(decodeMimeHeaderValue(encodedName)).toBe('Réunion Bot');
+  });
+
+  it('encodes a non-ASCII To value with no address brackets as a whole encoded-word, same as Subject', () => {
+    const raw = buildRawEmail({
+      to: 'Équipe Support',
+      subject: 'S',
+      body: 'B',
+    });
+
+    const decoded = decodeRaw(raw);
+    const toLine = decoded
+      .split('\r\n')
+      .find((line) => line.startsWith('To:'))!;
+    const value = toLine.slice('To: '.length);
+
+    expect(value).toMatch(/^=\?UTF-8\?B\?.+\?=$/);
+    expect(decodeMimeHeaderValue(value)).toBe('Équipe Support');
+  });
 });

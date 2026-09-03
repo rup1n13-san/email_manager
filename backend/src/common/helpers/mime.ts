@@ -16,9 +16,23 @@ function encodeMimeHeaderValue(value: string): string {
   return `=?UTF-8?B?${Buffer.from(value, 'utf-8').toString('base64')}?=`;
 }
 
+// RFC 2047 encoded-words may only wrap the display-name phrase, never the
+// <addr-spec> — encoding the whole "Name <addr>" string would make the
+// address unparseable. Only the name (if present) gets encoded.
+function encodeAddressHeader(value: string): string {
+  const match = /^(.*)<([^<>]+)>\s*$/.exec(value.trim());
+  if (!match) return encodeMimeHeaderValue(value);
+
+  const [, rawName, address] = match;
+  const displayName = rawName.trim().replace(/^"(.*)"$/, '$1');
+  return displayName
+    ? `${encodeMimeHeaderValue(displayName)} <${address.trim()}>`
+    : `<${address.trim()}>`;
+}
+
 export function buildRawEmail({ to, subject, body }: MimeMessageInput): string {
   const headers = [
-    `To: ${to}`,
+    `To: ${encodeAddressHeader(to)}`,
     `Subject: ${encodeMimeHeaderValue(subject)}`,
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset="UTF-8"',
