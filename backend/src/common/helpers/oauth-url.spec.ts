@@ -60,7 +60,7 @@ describe('buildGoogleOAuthUrl', () => {
     const params = new URL(url).searchParams;
     const scope = params.get('scope') ?? '';
     expect(scope).toContain('https://www.googleapis.com/auth/gmail.readonly');
-    expect(scope).toContain('https://www.googleapis.com/auth/gmail.send');
+    expect(scope).toContain('https://www.googleapis.com/auth/gmail.compose');
   });
 
   it('includes include_granted_scopes=true', () => {

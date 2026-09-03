@@ -16,9 +16,10 @@ export function buildGoogleOAuthUrl(state: string): string {
   return oauth2Client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
+    // compose (not send) — send cannot create, update or delete drafts.
     scope: [
       'https://www.googleapis.com/auth/gmail.readonly',
-      'https://www.googleapis.com/auth/gmail.send',
+      'https://www.googleapis.com/auth/gmail.compose',
       'https://www.googleapis.com/auth/userinfo.email',
     ],
     state,
