@@ -30,7 +30,6 @@ jest.unstable_mockModule('googleapis', () => ({
     },
     gmail: mockGmailFactory,
   },
-  Common: { GaxiosError: MockGaxiosError },
 }));
 
 type EmailSummary = {

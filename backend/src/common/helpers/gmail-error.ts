@@ -1,12 +1,28 @@
-import { Common } from 'googleapis';
-
 export type GmailErrorKind =
   'needs_reconnect' | 'not_found' | 'rate_limited' | 'unknown';
 
-export function classifyGmailError(error: unknown): GmailErrorKind {
-  if (!(error instanceof Common.GaxiosError)) return 'unknown';
+interface GaxiosLikeError {
+  status: number;
+  response?: { data?: unknown };
+}
 
-  const status = error.status;
+// Duck-typed rather than `instanceof GaxiosError`: googleapis and
+// google-auth-library resolve to two separately-installed gaxios copies, so
+// their GaxiosError classes are not the same identity and instanceof fails
+// across that boundary (e.g. a token-refresh failure thrown by
+// google-auth-library would never match googleapis's own GaxiosError class).
+function isGaxiosLikeError(error: unknown): error is GaxiosLikeError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    typeof (error as { status?: unknown }).status === 'number'
+  );
+}
+
+export function classifyGmailError(error: unknown): GmailErrorKind {
+  if (!isGaxiosLikeError(error)) return 'unknown';
+
+  const { status } = error;
   if (status === 401) return 'needs_reconnect';
   if (status === 404) return 'not_found';
 
@@ -21,7 +37,7 @@ export function classifyGmailError(error: unknown): GmailErrorKind {
     return 'unknown';
   }
 
-  if (status === 429 || (status !== undefined && status >= 500)) {
+  if (status === 429 || status >= 500) {
     return 'rate_limited';
   }
 
