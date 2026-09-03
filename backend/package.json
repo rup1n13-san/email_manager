@@ -25,7 +25,8 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "webhook:set": "bash scripts/set-webhook.sh",
-    "webhook:set:prod": "bash scripts/set-webhook.sh production"
+    "webhook:set:prod": "bash scripts/set-webhook.sh production",
+    "gmail:manual-test": "node --loader ts-node/esm scripts/test-gmail-service.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
