@@ -22,6 +22,11 @@ export interface EmailSummary {
   snippet: string;
 }
 
+export interface EmailDetail extends EmailSummary {
+  body: string;
+  truncated: boolean;
+}
+
 type GmailNonActive = Exclude<GmailClientResult, { status: 'active' }>;
 type GmailApiError =
   | { status: 'needs_reconnect' }
@@ -125,18 +130,83 @@ export class GmailService {
       format: 'metadata',
       metadataHeaders: ['From', 'Subject', 'Date'],
     });
-    const headers = data.payload?.headers ?? [];
-    const header = (name: string) =>
-      headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())
-        ?.value ?? '';
     return {
       id: data.id ?? id,
       threadId: data.threadId ?? '',
-      subject: header('Subject'),
-      from: header('From'),
-      date: header('Date'),
+      subject: this.headerValue(data.payload?.headers, 'Subject'),
+      from: this.headerValue(data.payload?.headers, 'From'),
+      date: this.headerValue(data.payload?.headers, 'Date'),
       snippet: data.snippet ?? '',
     };
+  }
+
+  async getEmail(
+    chatId: string,
+    id: string,
+    maxBodyLength = 4000,
+  ): Promise<GmailResult<EmailDetail>> {
+    const client = await this.getClient(chatId);
+    if (client.status !== 'active') return client;
+
+    try {
+      const { data } = await client.gmail.users.messages.get({
+        userId: 'me',
+        id,
+        format: 'full',
+      });
+      const fullBody = this.extractBody(data.payload);
+      const truncated = fullBody.length > maxBodyLength;
+      return {
+        status: 'ok',
+        data: {
+          id: data.id ?? id,
+          threadId: data.threadId ?? '',
+          subject: this.headerValue(data.payload?.headers, 'Subject'),
+          from: this.headerValue(data.payload?.headers, 'From'),
+          date: this.headerValue(data.payload?.headers, 'Date'),
+          snippet: data.snippet ?? '',
+          body: truncated ? fullBody.slice(0, maxBodyLength) : fullBody,
+          truncated,
+        },
+      };
+    } catch (error) {
+      return this.toApiError(error);
+    }
+  }
+
+  private headerValue(
+    headers: gmail_v1.Schema$MessagePartHeader[] | undefined,
+    name: string,
+  ): string {
+    return (
+      headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())
+        ?.value ?? ''
+    );
+  }
+
+  // Prefers text/plain over text/html, depth-first across the MIME tree —
+  // most real messages are multipart/alternative with both.
+  private extractBody(part: gmail_v1.Schema$MessagePart | undefined): string {
+    if (!part) return '';
+    return (
+      this.findPart(part, 'text/plain') ??
+      this.findPart(part, 'text/html') ??
+      ''
+    );
+  }
+
+  private findPart(
+    part: gmail_v1.Schema$MessagePart,
+    mimeType: string,
+  ): string | undefined {
+    if (part.mimeType === mimeType && part.body?.data) {
+      return Buffer.from(part.body.data, 'base64url').toString('utf-8');
+    }
+    for (const child of part.parts ?? []) {
+      const found = this.findPart(child, mimeType);
+      if (found) return found;
+    }
+    return undefined;
   }
 
   private toApiError(error: unknown): GmailApiError {
@@ -153,11 +223,6 @@ export class GmailService {
   searchEmails(query: string) {
     this.logger.debug(`searchEmails called with query="${query}"`);
     return { query };
-  }
-
-  getEmail(id: string) {
-    this.logger.debug(`getEmail called for id=${id}`);
-    return { id };
   }
 
   sendEmail() {

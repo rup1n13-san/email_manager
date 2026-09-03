@@ -35,6 +35,8 @@ type EmailSummary = {
   snippet: string;
 };
 
+type EmailDetail = EmailSummary & { body: string; truncated: boolean };
+
 type GmailResult<T> =
   | { status: 'ok'; data: T }
   | { status: 'none' }
@@ -57,6 +59,11 @@ type GmailServiceInstance = {
     chatId: string,
     maxResults?: number,
   ): Promise<GmailResult<EmailSummary[]>>;
+  getEmail(
+    chatId: string,
+    id: string,
+    maxBodyLength?: number,
+  ): Promise<GmailResult<EmailDetail>>;
 };
 
 describe('GmailService', () => {
@@ -300,6 +307,133 @@ describe('GmailService', () => {
       const result = await service.listEmails('chat-1');
 
       expect(result).toEqual({ status: 'rate_limited' });
+    });
+  });
+
+  describe('getEmail', () => {
+    function givenActiveConnection() {
+      mockConnectionService.getActiveTokens.mockResolvedValue({
+        status: 'active',
+        account,
+        tokens: {
+          accessToken: 'the-access-token',
+          refreshToken: 'the-refresh-token',
+          expiresAt: new Date(Date.now() + 3600_000),
+        },
+      });
+    }
+
+    function b64(text: string) {
+      return Buffer.from(text).toString('base64url');
+    }
+
+    it('passes through a non-active client status untouched', async () => {
+      mockConnectionService.getActiveTokens.mockResolvedValue({
+        status: 'none',
+      });
+
+      const result = await service.getEmail('chat-1', 'm1');
+
+      expect(result).toEqual({ status: 'none' });
+      expect(mockMessagesGet).not.toHaveBeenCalled();
+    });
+
+    it('prefers text/plain over text/html in a multipart/alternative message', async () => {
+      givenActiveConnection();
+      mockMessagesGet.mockResolvedValue({
+        data: {
+          id: 'm1',
+          threadId: 't1',
+          snippet: 'preview',
+          payload: {
+            headers: [
+              { name: 'Subject', value: 'Hello' },
+              { name: 'From', value: 'a@x.com' },
+              { name: 'Date', value: 'Wed, 1 Jan 2025 00:00:00 +0000' },
+            ],
+            mimeType: 'multipart/alternative',
+            parts: [
+              {
+                mimeType: 'text/html',
+                body: { data: b64('<p>Hello HTML</p>') },
+              },
+              {
+                mimeType: 'text/plain',
+                body: { data: b64('Hello plain text') },
+              },
+            ],
+          },
+        },
+      });
+
+      const result = await service.getEmail('chat-1', 'm1');
+
+      expect(result).toEqual({
+        status: 'ok',
+        data: expect.objectContaining({
+          body: 'Hello plain text',
+          truncated: false,
+        }),
+      });
+    });
+
+    it('falls back to text/html when no text/plain part exists', async () => {
+      givenActiveConnection();
+      mockMessagesGet.mockResolvedValue({
+        data: {
+          id: 'm1',
+          threadId: 't1',
+          payload: {
+            headers: [],
+            mimeType: 'text/html',
+            body: { data: b64('<p>Only HTML</p>') },
+          },
+        },
+      });
+
+      const result = await service.getEmail('chat-1', 'm1');
+
+      expect(result).toEqual({
+        status: 'ok',
+        data: expect.objectContaining({ body: '<p>Only HTML</p>' }),
+      });
+    });
+
+    it('truncates a body longer than maxBodyLength and flags it', async () => {
+      givenActiveConnection();
+      const longBody = 'x'.repeat(50);
+      mockMessagesGet.mockResolvedValue({
+        data: {
+          id: 'm1',
+          threadId: 't1',
+          payload: {
+            headers: [],
+            mimeType: 'text/plain',
+            body: { data: b64(longBody) },
+          },
+        },
+      });
+
+      const result = await service.getEmail('chat-1', 'm1', 10);
+
+      expect(result).toEqual({
+        status: 'ok',
+        data: expect.objectContaining({
+          body: 'x'.repeat(10),
+          truncated: true,
+        }),
+      });
+    });
+
+    it('maps a 404 to not_found instead of throwing', async () => {
+      givenActiveConnection();
+      const error = new MockGaxiosError('Not Found');
+      error.status = 404;
+      mockMessagesGet.mockRejectedValue(error);
+
+      const result = await service.getEmail('chat-1', 'missing');
+
+      expect(result).toEqual({ status: 'not_found' });
     });
   });
 });
