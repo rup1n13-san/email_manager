@@ -6,6 +6,7 @@ import {
   ActiveAccount,
 } from '../connection/connection.service.js';
 import { classifyGmailError } from '../../common/helpers/gmail-error.js';
+import { buildRawEmail } from '../../common/helpers/mime.js';
 
 export type GmailClientResult =
   | { status: 'active'; gmail: gmail_v1.Gmail; account: ActiveAccount }
@@ -25,6 +26,20 @@ export interface EmailSummary {
 export interface EmailDetail extends EmailSummary {
   body: string;
   truncated: boolean;
+}
+
+export interface DraftSummary {
+  id: string;
+  messageId: string;
+  threadId: string;
+  to: string;
+  subject: string;
+  body: string;
+}
+
+export interface SentMessage {
+  id: string;
+  threadId: string;
 }
 
 type GmailNonActive = Exclude<GmailClientResult, { status: 'active' }>;
@@ -238,8 +253,211 @@ export class GmailService {
     return { status: kind };
   }
 
-  sendEmail() {
-    this.logger.debug('sendEmail called');
-    return { sent: true };
+  async createDraft(
+    chatId: string,
+    to: string,
+    subject: string,
+    body: string,
+  ): Promise<GmailResult<DraftSummary>> {
+    const client = await this.getClient(chatId);
+    if (client.status !== 'active') return client;
+
+    try {
+      const raw = buildRawEmail({ to, subject, body });
+      const { data } = await client.gmail.users.drafts.create({
+        userId: 'me',
+        requestBody: { message: { raw } },
+      });
+      return {
+        status: 'ok',
+        data: this.draftSummaryFromInput(data, '', to, subject, body),
+      };
+    } catch (error) {
+      return this.toApiError(error);
+    }
+  }
+
+  async updateDraft(
+    chatId: string,
+    draftId: string,
+    to: string,
+    subject: string,
+    body: string,
+  ): Promise<GmailResult<DraftSummary>> {
+    const client = await this.getClient(chatId);
+    if (client.status !== 'active') return client;
+
+    try {
+      const raw = buildRawEmail({ to, subject, body });
+      const { data } = await client.gmail.users.drafts.update({
+        userId: 'me',
+        id: draftId,
+        requestBody: { message: { raw } },
+      });
+      return {
+        status: 'ok',
+        data: this.draftSummaryFromInput(data, draftId, to, subject, body),
+      };
+    } catch (error) {
+      return this.toApiError(error);
+    }
+  }
+
+  async getDraft(
+    chatId: string,
+    draftId: string,
+  ): Promise<GmailResult<DraftSummary>> {
+    const client = await this.getClient(chatId);
+    if (client.status !== 'active') return client;
+
+    try {
+      const summary = await this.getDraftSummaryById(client.gmail, draftId);
+      return { status: 'ok', data: summary };
+    } catch (error) {
+      return this.toApiError(error);
+    }
+  }
+
+  async listDrafts(
+    chatId: string,
+    maxResults = 20,
+  ): Promise<GmailResult<DraftSummary[]>> {
+    const client = await this.getClient(chatId);
+    if (client.status !== 'active') return client;
+
+    try {
+      const ids = await this.collectDraftIds(client.gmail, maxResults);
+      const drafts = await Promise.all(
+        ids.map((id) => this.getDraftSummaryById(client.gmail, id)),
+      );
+      return { status: 'ok', data: drafts };
+    } catch (error) {
+      return this.toApiError(error);
+    }
+  }
+
+  async sendDraft(
+    chatId: string,
+    draftId: string,
+  ): Promise<GmailResult<SentMessage>> {
+    const client = await this.getClient(chatId);
+    if (client.status !== 'active') return client;
+
+    try {
+      const { data } = await client.gmail.users.drafts.send({
+        userId: 'me',
+        requestBody: { id: draftId },
+      });
+      return {
+        status: 'ok',
+        data: { id: data.id ?? '', threadId: data.threadId ?? '' },
+      };
+    } catch (error) {
+      return this.toApiError(error);
+    }
+  }
+
+  async deleteDraft(
+    chatId: string,
+    draftId: string,
+  ): Promise<GmailResult<{ deleted: true }>> {
+    const client = await this.getClient(chatId);
+    if (client.status !== 'active') return client;
+
+    try {
+      await client.gmail.users.drafts.delete({ userId: 'me', id: draftId });
+      return { status: 'ok', data: { deleted: true } };
+    } catch (error) {
+      const apiError = this.toApiError(error);
+      // Already gone is success — deletion is idempotent.
+      if (apiError.status === 'not_found') {
+        return { status: 'ok', data: { deleted: true } };
+      }
+      return apiError;
+    }
+  }
+
+  // Direct send — kept for future use, not exposed to any Telegram command
+  // or agent tool. The agent's actual send path is createDraft + sendDraft.
+  async sendEmail(
+    chatId: string,
+    to: string,
+    subject: string,
+    body: string,
+  ): Promise<GmailResult<SentMessage>> {
+    const client = await this.getClient(chatId);
+    if (client.status !== 'active') return client;
+
+    try {
+      const raw = buildRawEmail({ to, subject, body });
+      const { data } = await client.gmail.users.messages.send({
+        userId: 'me',
+        requestBody: { raw },
+      });
+      return {
+        status: 'ok',
+        data: { id: data.id ?? '', threadId: data.threadId ?? '' },
+      };
+    } catch (error) {
+      return this.toApiError(error);
+    }
+  }
+
+  private async collectDraftIds(
+    gmail: gmail_v1.Gmail,
+    maxResults: number,
+  ): Promise<string[]> {
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const { data } = await gmail.users.drafts.list({
+        userId: 'me',
+        maxResults: Math.min(maxResults - ids.length, 500),
+        pageToken,
+      });
+      for (const draft of data.drafts ?? []) {
+        if (draft.id) ids.push(draft.id);
+      }
+      pageToken = data.nextPageToken ?? undefined;
+    } while (pageToken && ids.length < maxResults);
+    return ids;
+  }
+
+  private async getDraftSummaryById(
+    gmail: gmail_v1.Gmail,
+    id: string,
+  ): Promise<DraftSummary> {
+    const { data } = await gmail.users.drafts.get({
+      userId: 'me',
+      id,
+      format: 'full',
+    });
+    return {
+      id: data.id ?? id,
+      messageId: data.message?.id ?? '',
+      threadId: data.message?.threadId ?? '',
+      to: this.headerValue(data.message?.payload?.headers, 'To'),
+      subject: this.headerValue(data.message?.payload?.headers, 'Subject'),
+      body: this.extractBody(data.message?.payload),
+    };
+  }
+
+  // create/update don't reliably echo parsed headers back, so the summary
+  // is built from what the caller sent rather than re-parsing the response.
+  private draftSummaryFromInput(
+    data: gmail_v1.Schema$Draft,
+    fallbackId: string,
+    to: string,
+    subject: string,
+    body: string,
+  ): DraftSummary {
+    return {
+      id: data.id ?? fallbackId,
+      messageId: data.message?.id ?? '',
+      threadId: data.message?.threadId ?? '',
+      to,
+      subject,
+      body,
+    };
   }
 }

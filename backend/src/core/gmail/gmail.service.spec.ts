@@ -7,6 +7,13 @@ const mockOn = jest.fn<any>();
 const mockGmailFactory = jest.fn<any>();
 const mockMessagesList = jest.fn<any>();
 const mockMessagesGet = jest.fn<any>();
+const mockMessagesSend = jest.fn<any>();
+const mockDraftsCreate = jest.fn<any>();
+const mockDraftsUpdate = jest.fn<any>();
+const mockDraftsGet = jest.fn<any>();
+const mockDraftsList = jest.fn<any>();
+const mockDraftsSend = jest.fn<any>();
+const mockDraftsDelete = jest.fn<any>();
 
 class MockGaxiosError extends Error {
   status?: number;
@@ -36,6 +43,17 @@ type EmailSummary = {
 };
 
 type EmailDetail = EmailSummary & { body: string; truncated: boolean };
+
+type DraftSummary = {
+  id: string;
+  messageId: string;
+  threadId: string;
+  to: string;
+  subject: string;
+  body: string;
+};
+
+type SentMessage = { id: string; threadId: string };
 
 type GmailResult<T> =
   | { status: 'ok'; data: T }
@@ -69,6 +87,35 @@ type GmailServiceInstance = {
     id: string,
     maxBodyLength?: number,
   ): Promise<GmailResult<EmailDetail>>;
+  createDraft(
+    chatId: string,
+    to: string,
+    subject: string,
+    body: string,
+  ): Promise<GmailResult<DraftSummary>>;
+  updateDraft(
+    chatId: string,
+    draftId: string,
+    to: string,
+    subject: string,
+    body: string,
+  ): Promise<GmailResult<DraftSummary>>;
+  getDraft(chatId: string, draftId: string): Promise<GmailResult<DraftSummary>>;
+  listDrafts(
+    chatId: string,
+    maxResults?: number,
+  ): Promise<GmailResult<DraftSummary[]>>;
+  sendDraft(chatId: string, draftId: string): Promise<GmailResult<SentMessage>>;
+  deleteDraft(
+    chatId: string,
+    draftId: string,
+  ): Promise<GmailResult<{ deleted: true }>>;
+  sendEmail(
+    chatId: string,
+    to: string,
+    subject: string,
+    body: string,
+  ): Promise<GmailResult<SentMessage>>;
 };
 
 describe('GmailService', () => {
@@ -81,10 +128,36 @@ describe('GmailService', () => {
 
   const account = { id: 'conn-1', email: 'user@example.com' };
 
+  function givenActiveConnection() {
+    mockConnectionService.getActiveTokens.mockResolvedValue({
+      status: 'active',
+      account,
+      tokens: {
+        accessToken: 'the-access-token',
+        refreshToken: 'the-refresh-token',
+        expiresAt: new Date(Date.now() + 3600_000),
+      },
+    });
+  }
+
   beforeEach(async () => {
     jest.clearAllMocks();
     mockGmailFactory.mockReturnValue({
-      users: { messages: { list: mockMessagesList, get: mockMessagesGet } },
+      users: {
+        messages: {
+          list: mockMessagesList,
+          get: mockMessagesGet,
+          send: mockMessagesSend,
+        },
+        drafts: {
+          create: mockDraftsCreate,
+          update: mockDraftsUpdate,
+          get: mockDraftsGet,
+          list: mockDraftsList,
+          send: mockDraftsSend,
+          delete: mockDraftsDelete,
+        },
+      },
     });
 
     const { GmailService } = await import('./gmail.service.js');
@@ -217,18 +290,6 @@ describe('GmailService', () => {
   });
 
   describe('listEmails', () => {
-    function givenActiveConnection() {
-      mockConnectionService.getActiveTokens.mockResolvedValue({
-        status: 'active',
-        account,
-        tokens: {
-          accessToken: 'the-access-token',
-          refreshToken: 'the-refresh-token',
-          expiresAt: new Date(Date.now() + 3600_000),
-        },
-      });
-    }
-
     function summaryFor(id: string, subject: string) {
       return {
         data: {
@@ -316,18 +377,6 @@ describe('GmailService', () => {
   });
 
   describe('getEmail', () => {
-    function givenActiveConnection() {
-      mockConnectionService.getActiveTokens.mockResolvedValue({
-        status: 'active',
-        account,
-        tokens: {
-          accessToken: 'the-access-token',
-          refreshToken: 'the-refresh-token',
-          expiresAt: new Date(Date.now() + 3600_000),
-        },
-      });
-    }
-
     function b64(text: string) {
       return Buffer.from(text).toString('base64url');
     }
@@ -443,18 +492,6 @@ describe('GmailService', () => {
   });
 
   describe('searchEmails', () => {
-    function givenActiveConnection() {
-      mockConnectionService.getActiveTokens.mockResolvedValue({
-        status: 'active',
-        account,
-        tokens: {
-          accessToken: 'the-access-token',
-          refreshToken: 'the-refresh-token',
-          expiresAt: new Date(Date.now() + 3600_000),
-        },
-      });
-    }
-
     it('forwards the query to messages.list verbatim, untouched by our own parsing', async () => {
       givenActiveConnection();
       mockMessagesList.mockResolvedValue({ data: { messages: [] } });
@@ -480,6 +517,296 @@ describe('GmailService', () => {
 
       expect(result).toEqual({ status: 'none' });
       expect(mockMessagesList).not.toHaveBeenCalled();
+    });
+  });
+
+  function decodeRaw(raw: string): string {
+    return Buffer.from(raw, 'base64url').toString('utf-8');
+  }
+
+  describe('createDraft', () => {
+    it('builds a MIME message and returns a summary built from the input', async () => {
+      givenActiveConnection();
+      mockDraftsCreate.mockResolvedValue({
+        data: { id: 'd1', message: { id: 'm1', threadId: 't1' } },
+      });
+
+      const result = await service.createDraft(
+        'chat-1',
+        'to@x.com',
+        'Subject',
+        'Body text',
+      );
+
+      const call = mockDraftsCreate.mock.calls[0][0] as {
+        requestBody: { message: { raw: string } };
+      };
+      const decoded = decodeRaw(call.requestBody.message.raw);
+      expect(decoded).toContain('To: to@x.com');
+      expect(decoded).toContain('Subject: Subject');
+      expect(decoded).toContain('Body text');
+
+      expect(result).toEqual({
+        status: 'ok',
+        data: {
+          id: 'd1',
+          messageId: 'm1',
+          threadId: 't1',
+          to: 'to@x.com',
+          subject: 'Subject',
+          body: 'Body text',
+        },
+      });
+    });
+
+    it('passes through a non-active client status untouched', async () => {
+      mockConnectionService.getActiveTokens.mockResolvedValue({
+        status: 'none',
+      });
+
+      const result = await service.createDraft('chat-1', 'to@x.com', 'S', 'B');
+
+      expect(result).toEqual({ status: 'none' });
+      expect(mockDraftsCreate).not.toHaveBeenCalled();
+    });
+
+    it('maps insufficient-permissions (stale pre-compose-scope grant) to needs_reconnect', async () => {
+      givenActiveConnection();
+      const error = new MockGaxiosError('Forbidden');
+      error.status = 403;
+      error.response = {
+        data: { error: { errors: [{ reason: 'insufficientPermissions' }] } },
+      };
+      mockDraftsCreate.mockRejectedValue(error);
+
+      const result = await service.createDraft('chat-1', 'to@x.com', 'S', 'B');
+
+      expect(result).toEqual({ status: 'needs_reconnect' });
+    });
+  });
+
+  describe('updateDraft', () => {
+    it('rebuilds the MIME message and returns a summary reflecting the new content', async () => {
+      givenActiveConnection();
+      mockDraftsUpdate.mockResolvedValue({
+        data: { id: 'd1', message: { id: 'm2', threadId: 't1' } },
+      });
+
+      const result = await service.updateDraft(
+        'chat-1',
+        'd1',
+        'to@x.com',
+        'New subject',
+        'New body',
+      );
+
+      expect(mockDraftsUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'd1' }),
+      );
+      expect(result).toEqual({
+        status: 'ok',
+        data: {
+          id: 'd1',
+          messageId: 'm2',
+          threadId: 't1',
+          to: 'to@x.com',
+          subject: 'New subject',
+          body: 'New body',
+        },
+      });
+    });
+  });
+
+  describe('getDraft', () => {
+    function b64(text: string) {
+      return Buffer.from(text).toString('base64url');
+    }
+
+    it('decodes the draft message into a DraftSummary', async () => {
+      givenActiveConnection();
+      mockDraftsGet.mockResolvedValue({
+        data: {
+          id: 'd1',
+          message: {
+            id: 'm1',
+            threadId: 't1',
+            payload: {
+              headers: [
+                { name: 'To', value: 'to@x.com' },
+                { name: 'Subject', value: 'Hello' },
+              ],
+              mimeType: 'text/plain',
+              body: { data: b64('Draft body') },
+            },
+          },
+        },
+      });
+
+      const result = await service.getDraft('chat-1', 'd1');
+
+      expect(mockDraftsGet).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'd1', format: 'full' }),
+      );
+      expect(result).toEqual({
+        status: 'ok',
+        data: {
+          id: 'd1',
+          messageId: 'm1',
+          threadId: 't1',
+          to: 'to@x.com',
+          subject: 'Hello',
+          body: 'Draft body',
+        },
+      });
+    });
+
+    it('passes through a non-active client status untouched', async () => {
+      mockConnectionService.getActiveTokens.mockResolvedValue({
+        status: 'none',
+      });
+
+      const result = await service.getDraft('chat-1', 'd1');
+
+      expect(result).toEqual({ status: 'none' });
+      expect(mockDraftsGet).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listDrafts', () => {
+    function b64(text: string) {
+      return Buffer.from(text).toString('base64url');
+    }
+
+    function draftFor(id: string, subject: string) {
+      return {
+        data: {
+          id,
+          message: {
+            id: `msg-${id}`,
+            threadId: `thread-${id}`,
+            payload: {
+              headers: [{ name: 'Subject', value: subject }],
+              mimeType: 'text/plain',
+              body: { data: b64(`body-${id}`) },
+            },
+          },
+        },
+      };
+    }
+
+    it('paginates drafts.list then fetches each full draft, merging in order', async () => {
+      givenActiveConnection();
+      mockDraftsList
+        .mockResolvedValueOnce({
+          data: { drafts: [{ id: 'd1' }, { id: 'd2' }], nextPageToken: 'p2' },
+        })
+        .mockResolvedValueOnce({ data: { drafts: [{ id: 'd3' }] } });
+      mockDraftsGet
+        .mockResolvedValueOnce(draftFor('d1', 'First'))
+        .mockResolvedValueOnce(draftFor('d2', 'Second'))
+        .mockResolvedValueOnce(draftFor('d3', 'Third'));
+
+      const result = await service.listDrafts('chat-1', 20);
+
+      expect(mockDraftsList).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({
+        status: 'ok',
+        data: [
+          expect.objectContaining({ id: 'd1', subject: 'First' }),
+          expect.objectContaining({ id: 'd2', subject: 'Second' }),
+          expect.objectContaining({ id: 'd3', subject: 'Third' }),
+        ],
+      });
+    });
+  });
+
+  describe('sendDraft', () => {
+    it('sends by draft id, not by re-encoding the message', async () => {
+      givenActiveConnection();
+      mockDraftsSend.mockResolvedValue({
+        data: { id: 'sent-1', threadId: 't1' },
+      });
+
+      const result = await service.sendDraft('chat-1', 'd1');
+
+      expect(mockDraftsSend).toHaveBeenCalledWith(
+        expect.objectContaining({ requestBody: { id: 'd1' } }),
+      );
+      expect(result).toEqual({
+        status: 'ok',
+        data: { id: 'sent-1', threadId: 't1' },
+      });
+    });
+
+    it('does not retry or resend on failure', async () => {
+      givenActiveConnection();
+      const error = new MockGaxiosError('Internal Server Error');
+      error.status = 500;
+      mockDraftsSend.mockRejectedValue(error);
+
+      const result = await service.sendDraft('chat-1', 'd1');
+
+      expect(mockDraftsSend).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ status: 'rate_limited' });
+    });
+  });
+
+  describe('deleteDraft', () => {
+    it('returns deleted:true on success', async () => {
+      givenActiveConnection();
+      mockDraftsDelete.mockResolvedValue({});
+
+      const result = await service.deleteDraft('chat-1', 'd1');
+
+      expect(result).toEqual({ status: 'ok', data: { deleted: true } });
+    });
+
+    it('treats a 404 (already deleted) as an idempotent success', async () => {
+      givenActiveConnection();
+      const error = new MockGaxiosError('Not Found');
+      error.status = 404;
+      mockDraftsDelete.mockRejectedValue(error);
+
+      const result = await service.deleteDraft('chat-1', 'd1');
+
+      expect(result).toEqual({ status: 'ok', data: { deleted: true } });
+    });
+
+    it('does not swallow a non-404 error', async () => {
+      givenActiveConnection();
+      const error = new MockGaxiosError('Unauthorized');
+      error.status = 401;
+      mockDraftsDelete.mockRejectedValue(error);
+
+      const result = await service.deleteDraft('chat-1', 'd1');
+
+      expect(result).toEqual({ status: 'needs_reconnect' });
+    });
+  });
+
+  describe('sendEmail (direct)', () => {
+    it('builds a MIME message and sends it via messages.send', async () => {
+      givenActiveConnection();
+      mockMessagesSend.mockResolvedValue({
+        data: { id: 'sent-1', threadId: 't1' },
+      });
+
+      const result = await service.sendEmail(
+        'chat-1',
+        'to@x.com',
+        'Subject',
+        'Body',
+      );
+
+      const call = mockMessagesSend.mock.calls[0][0] as {
+        requestBody: { raw: string };
+      };
+      const decoded = decodeRaw(call.requestBody.raw);
+      expect(decoded).toContain('To: to@x.com');
+      expect(result).toEqual({
+        status: 'ok',
+        data: { id: 'sent-1', threadId: 't1' },
+      });
     });
   });
 });
