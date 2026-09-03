@@ -143,6 +143,30 @@ export class ConnectionService {
     };
   }
 
+  async updateAccessToken(
+    connectionId: string,
+    accessToken: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    try {
+      await this.prisma.connection.update({
+        where: { id: connectionId },
+        data: {
+          accessToken: this.encryption.encrypt(accessToken),
+          expiresAt,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2025'
+      ) {
+        return;
+      }
+      throw error;
+    }
+  }
+
   async listConnections(
     chatId: string,
   ): Promise<{ email: string; providerAccountId: string }[]> {

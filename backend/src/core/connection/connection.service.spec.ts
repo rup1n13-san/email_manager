@@ -39,6 +39,7 @@ function mockPrisma() {
     },
     connection: {
       upsert: jest.fn<any>(),
+      update: jest.fn<any>(),
       delete: jest.fn<any>(),
       findUnique: jest.fn<any>(),
       findMany: jest.fn<any>(),
@@ -189,6 +190,60 @@ describe('ConnectionService', () => {
           new Date(),
         ),
       ).rejects.toThrow('User not found');
+    });
+  });
+
+  describe('updateAccessToken', () => {
+    it('encrypts the new access token and updates expiresAt', async () => {
+      prisma.connection.update.mockResolvedValue(mockConnection);
+      const expiresAt = new Date(Date.now() + 3600_000);
+
+      await service.updateAccessToken(
+        mockConnection.id,
+        'refreshed-access',
+        expiresAt,
+      );
+
+      expect(prisma.connection.update).toHaveBeenCalledTimes(1);
+      const updateCall = prisma.connection.update.mock.calls[0][0] as {
+        where: Record<string, unknown>;
+        data: { accessToken: string; expiresAt: Date };
+      };
+      expect(updateCall.where).toEqual({ id: mockConnection.id });
+      expect(updateCall.data.accessToken).not.toBe('refreshed-access');
+      expect(updateCall.data.accessToken).toMatch(
+        /^[0-9a-f]{24}:[0-9a-f]{32}:[0-9a-f]+$/i,
+      );
+      expect(updateCall.data.expiresAt).toBe(expiresAt);
+    });
+
+    it('treats a P2025 (connection deleted mid-refresh) as an idempotent no-op', async () => {
+      prisma.connection.update.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Record not found', {
+          code: 'P2025',
+          clientVersion: '7.9.1',
+        }),
+      );
+
+      await expect(
+        service.updateAccessToken(
+          mockConnection.id,
+          'refreshed-access',
+          new Date(),
+        ),
+      ).resolves.toBeUndefined();
+    });
+
+    it('rethrows non-P2025 errors', async () => {
+      prisma.connection.update.mockRejectedValue(new Error('db unreachable'));
+
+      await expect(
+        service.updateAccessToken(
+          mockConnection.id,
+          'refreshed-access',
+          new Date(),
+        ),
+      ).rejects.toThrow('db unreachable');
     });
   });
 
