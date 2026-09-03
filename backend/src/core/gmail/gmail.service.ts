@@ -83,7 +83,10 @@ export class GmailService {
       this.connectionService
         .updateAccessToken(account.id, newTokens.access_token, expiresAt)
         .catch((error: unknown) =>
-          this.logger.warn(
+          // error, not warn: the in-flight call still succeeds with the new
+          // token in memory, but the DB now holds a stale one — every later
+          // call re-triggers a refresh against Google until this is fixed.
+          this.logger.error(
             `Failed to persist refreshed token for connection=${account.id}: ` +
               `${error instanceof Error ? error.message : String(error)}`,
           ),
