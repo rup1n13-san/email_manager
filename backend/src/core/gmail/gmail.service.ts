@@ -201,13 +201,25 @@ export class GmailService {
           from: this.headerValue(data.payload?.headers, 'From'),
           date: this.headerValue(data.payload?.headers, 'Date'),
           snippet: data.snippet ?? '',
-          body: truncated ? fullBody.slice(0, maxBodyLength) : fullBody,
+          body: truncated
+            ? this.truncateOnCodePointBoundary(fullBody, maxBodyLength)
+            : fullBody,
           truncated,
         },
       };
     } catch (error) {
       return this.toApiError(error);
     }
+  }
+
+  // A plain slice() can land between a surrogate pair's two UTF-16 units
+  // (an emoji, some CJK), leaving a dangling unpaired surrogate. Back off
+  // one unit when the cut point is a high surrogate.
+  private truncateOnCodePointBoundary(text: string, maxLength: number): string {
+    let end = maxLength;
+    const code = text.charCodeAt(end - 1);
+    if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+    return text.slice(0, end);
   }
 
   private headerValue(

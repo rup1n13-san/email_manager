@@ -478,6 +478,41 @@ describe('GmailService', () => {
       });
     });
 
+    it('does not split a UTF-16 surrogate pair when the cut lands mid-character', async () => {
+      givenActiveConnection();
+      // 9 ASCII chars + a surrogate-pair emoji (indices 9-10) + more text.
+      // maxBodyLength=10 would slice(0,10), landing on the emoji's high
+      // surrogate at index 9 without its low surrogate at index 10.
+      const longBody = `${'x'.repeat(9)}😀more text after`;
+      mockMessagesGet.mockResolvedValue({
+        data: {
+          id: 'm1',
+          threadId: 't1',
+          payload: {
+            headers: [],
+            mimeType: 'text/plain',
+            body: { data: b64(longBody) },
+          },
+        },
+      });
+
+      const result = await service.getEmail('chat-1', 'm1', 10);
+
+      expect(result).toEqual({
+        status: 'ok',
+        data: expect.objectContaining({
+          body: 'x'.repeat(9),
+          truncated: true,
+        }),
+      });
+      if (result.status === 'ok') {
+        const lastCode = result.data.body.charCodeAt(
+          result.data.body.length - 1,
+        );
+        expect(lastCode < 0xd800 || lastCode > 0xdbff).toBe(true);
+      }
+    });
+
     it('maps a 404 to not_found instead of throwing', async () => {
       givenActiveConnection();
       const error = new MockGaxiosError('Not Found');
