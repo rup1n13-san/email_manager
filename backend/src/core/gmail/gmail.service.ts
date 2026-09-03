@@ -100,11 +100,70 @@ export class GmailService {
     };
   }
 
+  // Shared skeleton for every public method: resolve the client, pass
+  // through a non-active status untouched, map a thrown API error to a
+  // typed result. Callers that need special error handling (e.g.
+  // deleteDraft's 404-is-success) catch inside their own `fn` instead.
+  private async withGmailClient<T>(
+    chatId: string,
+    fn: (gmail: gmail_v1.Gmail) => Promise<T>,
+  ): Promise<GmailResult<T>> {
+    const client = await this.getClient(chatId);
+    if (client.status !== 'active') return client;
+
+    try {
+      const data = await fn(client.gmail);
+      return { status: 'ok', data };
+    } catch (error) {
+      return this.toApiError(error);
+    }
+  }
+
+  private toApiError(error: unknown): GmailApiError {
+    const kind = classifyGmailError(error);
+    if (kind === 'unknown') {
+      return {
+        status: 'unknown',
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    return { status: kind };
+  }
+
+  // One cursor-pagination loop shared by every Gmail list endpoint
+  // (messages, drafts) — they differ only in which resource is called and
+  // which field holds the id.
+  private async paginateIds<Item>(
+    fetchPage: (
+      pageToken: string | undefined,
+      pageSize: number,
+    ) => Promise<{ items: Item[]; nextPageToken?: string }>,
+    getId: (item: Item) => string | null | undefined,
+    maxResults: number,
+  ): Promise<string[]> {
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const { items, nextPageToken } = await fetchPage(
+        pageToken,
+        Math.min(maxResults - ids.length, 500),
+      );
+      for (const item of items) {
+        const id = getId(item);
+        if (id) ids.push(id);
+      }
+      pageToken = nextPageToken;
+    } while (pageToken && ids.length < maxResults);
+    return ids;
+  }
+
   async listEmails(
     chatId: string,
     maxResults = 20,
   ): Promise<GmailResult<EmailSummary[]>> {
-    return this.listMessageSummaries(chatId, maxResults);
+    return this.withGmailClient(chatId, (gmail) =>
+      this.listMessageSummaries(gmail, maxResults),
+    );
   }
 
   async searchEmails(
@@ -112,26 +171,18 @@ export class GmailService {
     query: string,
     maxResults = 20,
   ): Promise<GmailResult<EmailSummary[]>> {
-    return this.listMessageSummaries(chatId, maxResults, query);
+    return this.withGmailClient(chatId, (gmail) =>
+      this.listMessageSummaries(gmail, maxResults, query),
+    );
   }
 
   private async listMessageSummaries(
-    chatId: string,
+    gmail: gmail_v1.Gmail,
     maxResults: number,
     query?: string,
-  ): Promise<GmailResult<EmailSummary[]>> {
-    const client = await this.getClient(chatId);
-    if (client.status !== 'active') return client;
-
-    try {
-      const ids = await this.collectMessageIds(client.gmail, maxResults, query);
-      const messages = await Promise.all(
-        ids.map((id) => this.getMessageSummary(client.gmail, id)),
-      );
-      return { status: 'ok', data: messages };
-    } catch (error) {
-      return this.toApiError(error);
-    }
+  ): Promise<EmailSummary[]> {
+    const ids = await this.collectMessageIds(gmail, maxResults, query);
+    return Promise.all(ids.map((id) => this.getMessageSummary(gmail, id)));
   }
 
   private async collectMessageIds(
@@ -139,21 +190,22 @@ export class GmailService {
     maxResults: number,
     query?: string,
   ): Promise<string[]> {
-    const ids: string[] = [];
-    let pageToken: string | undefined;
-    do {
-      const { data } = await gmail.users.messages.list({
-        userId: 'me',
-        maxResults: Math.min(maxResults - ids.length, 500),
-        pageToken,
-        q: query,
-      });
-      for (const message of data.messages ?? []) {
-        if (message.id) ids.push(message.id);
-      }
-      pageToken = data.nextPageToken ?? undefined;
-    } while (pageToken && ids.length < maxResults);
-    return ids;
+    return this.paginateIds(
+      async (pageToken, pageSize) => {
+        const { data } = await gmail.users.messages.list({
+          userId: 'me',
+          maxResults: pageSize,
+          pageToken,
+          q: query,
+        });
+        return {
+          items: data.messages ?? [],
+          nextPageToken: data.nextPageToken ?? undefined,
+        };
+      },
+      (message) => message.id,
+      maxResults,
+    );
   }
 
   private async getMessageSummary(
@@ -181,11 +233,8 @@ export class GmailService {
     id: string,
     maxBodyLength = 4000,
   ): Promise<GmailResult<EmailDetail>> {
-    const client = await this.getClient(chatId);
-    if (client.status !== 'active') return client;
-
-    try {
-      const { data } = await client.gmail.users.messages.get({
+    return this.withGmailClient(chatId, async (gmail) => {
+      const { data } = await gmail.users.messages.get({
         userId: 'me',
         id,
         format: 'full',
@@ -193,23 +242,18 @@ export class GmailService {
       const fullBody = this.extractBody(data.payload);
       const truncated = fullBody.length > maxBodyLength;
       return {
-        status: 'ok',
-        data: {
-          id: data.id ?? id,
-          threadId: data.threadId ?? '',
-          subject: this.headerValue(data.payload?.headers, 'Subject'),
-          from: this.headerValue(data.payload?.headers, 'From'),
-          date: this.headerValue(data.payload?.headers, 'Date'),
-          snippet: data.snippet ?? '',
-          body: truncated
-            ? this.truncateOnCodePointBoundary(fullBody, maxBodyLength)
-            : fullBody,
-          truncated,
-        },
+        id: data.id ?? id,
+        threadId: data.threadId ?? '',
+        subject: this.headerValue(data.payload?.headers, 'Subject'),
+        from: this.headerValue(data.payload?.headers, 'From'),
+        date: this.headerValue(data.payload?.headers, 'Date'),
+        snippet: data.snippet ?? '',
+        body: truncated
+          ? this.truncateOnCodePointBoundary(fullBody, maxBodyLength)
+          : fullBody,
+        truncated,
       };
-    } catch (error) {
-      return this.toApiError(error);
-    }
+    });
   }
 
   // A plain slice() can land between a surrogate pair's two UTF-16 units
@@ -257,39 +301,20 @@ export class GmailService {
     return undefined;
   }
 
-  private toApiError(error: unknown): GmailApiError {
-    const kind = classifyGmailError(error);
-    if (kind === 'unknown') {
-      return {
-        status: 'unknown',
-        message: error instanceof Error ? error.message : String(error),
-      };
-    }
-    return { status: kind };
-  }
-
   async createDraft(
     chatId: string,
     to: string,
     subject: string,
     body: string,
   ): Promise<GmailResult<DraftSummary>> {
-    const client = await this.getClient(chatId);
-    if (client.status !== 'active') return client;
-
-    try {
+    return this.withGmailClient(chatId, async (gmail) => {
       const raw = buildRawEmail({ to, subject, body });
-      const { data } = await client.gmail.users.drafts.create({
+      const { data } = await gmail.users.drafts.create({
         userId: 'me',
         requestBody: { message: { raw } },
       });
-      return {
-        status: 'ok',
-        data: this.draftSummaryFromInput(data, '', to, subject, body),
-      };
-    } catch (error) {
-      return this.toApiError(error);
-    }
+      return this.draftSummaryFromInput(data, '', to, subject, body);
+    });
   }
 
   async updateDraft(
@@ -299,143 +324,55 @@ export class GmailService {
     subject: string,
     body: string,
   ): Promise<GmailResult<DraftSummary>> {
-    const client = await this.getClient(chatId);
-    if (client.status !== 'active') return client;
-
-    try {
+    return this.withGmailClient(chatId, async (gmail) => {
       const raw = buildRawEmail({ to, subject, body });
-      const { data } = await client.gmail.users.drafts.update({
+      const { data } = await gmail.users.drafts.update({
         userId: 'me',
         id: draftId,
         requestBody: { message: { raw } },
       });
-      return {
-        status: 'ok',
-        data: this.draftSummaryFromInput(data, draftId, to, subject, body),
-      };
-    } catch (error) {
-      return this.toApiError(error);
-    }
+      return this.draftSummaryFromInput(data, draftId, to, subject, body);
+    });
   }
 
   async getDraft(
     chatId: string,
     draftId: string,
   ): Promise<GmailResult<DraftSummary>> {
-    const client = await this.getClient(chatId);
-    if (client.status !== 'active') return client;
-
-    try {
-      const summary = await this.getDraftSummaryById(client.gmail, draftId);
-      return { status: 'ok', data: summary };
-    } catch (error) {
-      return this.toApiError(error);
-    }
+    return this.withGmailClient(chatId, (gmail) =>
+      this.getDraftSummaryById(gmail, draftId),
+    );
   }
 
   async listDrafts(
     chatId: string,
     maxResults = 20,
   ): Promise<GmailResult<DraftSummary[]>> {
-    const client = await this.getClient(chatId);
-    if (client.status !== 'active') return client;
-
-    try {
-      const ids = await this.collectDraftIds(client.gmail, maxResults);
-      const drafts = await Promise.all(
-        ids.map((id) => this.getDraftSummaryById(client.gmail, id)),
-      );
-      return { status: 'ok', data: drafts };
-    } catch (error) {
-      return this.toApiError(error);
-    }
-  }
-
-  async sendDraft(
-    chatId: string,
-    draftId: string,
-  ): Promise<GmailResult<SentMessage>> {
-    const client = await this.getClient(chatId);
-    if (client.status !== 'active') return client;
-
-    try {
-      const { data } = await client.gmail.users.drafts.send({
-        userId: 'me',
-        requestBody: { id: draftId },
-      });
-      return {
-        status: 'ok',
-        data: { id: data.id ?? '', threadId: data.threadId ?? '' },
-      };
-    } catch (error) {
-      return this.toApiError(error);
-    }
-  }
-
-  async deleteDraft(
-    chatId: string,
-    draftId: string,
-  ): Promise<GmailResult<{ deleted: true }>> {
-    const client = await this.getClient(chatId);
-    if (client.status !== 'active') return client;
-
-    try {
-      await client.gmail.users.drafts.delete({ userId: 'me', id: draftId });
-      return { status: 'ok', data: { deleted: true } };
-    } catch (error) {
-      const apiError = this.toApiError(error);
-      // Already gone is success — deletion is idempotent.
-      if (apiError.status === 'not_found') {
-        return { status: 'ok', data: { deleted: true } };
-      }
-      return apiError;
-    }
-  }
-
-  // Direct send — kept for future use, not exposed to any Telegram command
-  // or agent tool. The agent's actual send path is createDraft + sendDraft.
-  async sendEmail(
-    chatId: string,
-    to: string,
-    subject: string,
-    body: string,
-  ): Promise<GmailResult<SentMessage>> {
-    const client = await this.getClient(chatId);
-    if (client.status !== 'active') return client;
-
-    try {
-      const raw = buildRawEmail({ to, subject, body });
-      const { data } = await client.gmail.users.messages.send({
-        userId: 'me',
-        requestBody: { raw },
-      });
-      return {
-        status: 'ok',
-        data: { id: data.id ?? '', threadId: data.threadId ?? '' },
-      };
-    } catch (error) {
-      return this.toApiError(error);
-    }
+    return this.withGmailClient(chatId, async (gmail) => {
+      const ids = await this.collectDraftIds(gmail, maxResults);
+      return Promise.all(ids.map((id) => this.getDraftSummaryById(gmail, id)));
+    });
   }
 
   private async collectDraftIds(
     gmail: gmail_v1.Gmail,
     maxResults: number,
   ): Promise<string[]> {
-    const ids: string[] = [];
-    let pageToken: string | undefined;
-    do {
-      const { data } = await gmail.users.drafts.list({
-        userId: 'me',
-        maxResults: Math.min(maxResults - ids.length, 500),
-        pageToken,
-      });
-      for (const draft of data.drafts ?? []) {
-        if (draft.id) ids.push(draft.id);
-      }
-      pageToken = data.nextPageToken ?? undefined;
-    } while (pageToken && ids.length < maxResults);
-    return ids;
+    return this.paginateIds(
+      async (pageToken, pageSize) => {
+        const { data } = await gmail.users.drafts.list({
+          userId: 'me',
+          maxResults: pageSize,
+          pageToken,
+        });
+        return {
+          items: data.drafts ?? [],
+          nextPageToken: data.nextPageToken ?? undefined,
+        };
+      },
+      (draft) => draft.id,
+      maxResults,
+    );
   }
 
   private async getDraftSummaryById(
@@ -474,5 +411,52 @@ export class GmailService {
       subject,
       body,
     };
+  }
+
+  async sendDraft(
+    chatId: string,
+    draftId: string,
+  ): Promise<GmailResult<SentMessage>> {
+    return this.withGmailClient(chatId, async (gmail) => {
+      const { data } = await gmail.users.drafts.send({
+        userId: 'me',
+        requestBody: { id: draftId },
+      });
+      return { id: data.id ?? '', threadId: data.threadId ?? '' };
+    });
+  }
+
+  async deleteDraft(
+    chatId: string,
+    draftId: string,
+  ): Promise<GmailResult<{ deleted: true }>> {
+    return this.withGmailClient(chatId, async (gmail) => {
+      try {
+        await gmail.users.drafts.delete({ userId: 'me', id: draftId });
+      } catch (error) {
+        // Already gone is success — deletion is idempotent. Any other
+        // error rethrows to withGmailClient's own catch.
+        if (classifyGmailError(error) !== 'not_found') throw error;
+      }
+      return { deleted: true } as const;
+    });
+  }
+
+  // Direct send — kept for future use, not exposed to any Telegram command
+  // or agent tool. The agent's actual send path is createDraft + sendDraft.
+  async sendEmail(
+    chatId: string,
+    to: string,
+    subject: string,
+    body: string,
+  ): Promise<GmailResult<SentMessage>> {
+    return this.withGmailClient(chatId, async (gmail) => {
+      const raw = buildRawEmail({ to, subject, body });
+      const { data } = await gmail.users.messages.send({
+        userId: 'me',
+        requestBody: { raw },
+      });
+      return { id: data.id ?? '', threadId: data.threadId ?? '' };
+    });
   }
 }
