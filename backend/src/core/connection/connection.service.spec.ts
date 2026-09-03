@@ -3,7 +3,6 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConnectionService } from './connection.service.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { EncryptionHelper } from '../../common/helpers/encryption.js';
-import { Prisma } from '../../generated/prisma/client.js';
 
 const VALID_KEY =
   '0992b7c6d936d9071b4e285b1794cf935a2b5a5a163c7ef1dc21c31c572960e7';
@@ -39,8 +38,6 @@ function mockPrisma() {
     },
     connection: {
       upsert: jest.fn<any>(),
-      update: jest.fn<any>(),
-      delete: jest.fn<any>(),
       findUnique: jest.fn<any>(),
       findMany: jest.fn<any>(),
       updateMany: jest.fn<any>(),
@@ -195,7 +192,7 @@ describe('ConnectionService', () => {
 
   describe('updateAccessToken', () => {
     it('encrypts the new access token and updates expiresAt', async () => {
-      prisma.connection.update.mockResolvedValue(mockConnection);
+      prisma.connection.updateMany.mockResolvedValue({ count: 1 });
       const expiresAt = new Date(Date.now() + 3600_000);
 
       await service.updateAccessToken(
@@ -204,8 +201,8 @@ describe('ConnectionService', () => {
         expiresAt,
       );
 
-      expect(prisma.connection.update).toHaveBeenCalledTimes(1);
-      const updateCall = prisma.connection.update.mock.calls[0][0] as {
+      expect(prisma.connection.updateMany).toHaveBeenCalledTimes(1);
+      const updateCall = prisma.connection.updateMany.mock.calls[0][0] as {
         where: Record<string, unknown>;
         data: { accessToken: string; expiresAt: Date };
       };
@@ -217,13 +214,8 @@ describe('ConnectionService', () => {
       expect(updateCall.data.expiresAt).toBe(expiresAt);
     });
 
-    it('treats a P2025 (connection deleted mid-refresh) as an idempotent no-op', async () => {
-      prisma.connection.update.mockRejectedValue(
-        new Prisma.PrismaClientKnownRequestError('Record not found', {
-          code: 'P2025',
-          clientVersion: '7.9.1',
-        }),
-      );
+    it('is an idempotent no-op when the connection was deleted mid-refresh (updateMany matches zero rows, never throws)', async () => {
+      prisma.connection.updateMany.mockResolvedValue({ count: 0 });
 
       await expect(
         service.updateAccessToken(
@@ -232,18 +224,6 @@ describe('ConnectionService', () => {
           new Date(),
         ),
       ).resolves.toBeUndefined();
-    });
-
-    it('rethrows non-P2025 errors', async () => {
-      prisma.connection.update.mockRejectedValue(new Error('db unreachable'));
-
-      await expect(
-        service.updateAccessToken(
-          mockConnection.id,
-          'refreshed-access',
-          new Date(),
-        ),
-      ).rejects.toThrow('db unreachable');
     });
   });
 
@@ -580,7 +560,7 @@ describe('ConnectionService', () => {
         'https://oauth2.googleapis.com/revoke',
         expect.objectContaining({ method: 'POST' }),
       );
-      expect(prisma.connection.delete).toHaveBeenCalledWith({
+      expect(prisma.connection.deleteMany).toHaveBeenCalledWith({
         where: { id: conn.id },
       });
       expect(result).toEqual({
@@ -601,7 +581,7 @@ describe('ConnectionService', () => {
 
       const result = await service.disconnect('chat123');
 
-      expect(prisma.connection.delete).toHaveBeenCalledWith({
+      expect(prisma.connection.deleteMany).toHaveBeenCalledWith({
         where: { id: conn.id },
       });
       expect(result).toEqual({
@@ -634,7 +614,7 @@ describe('ConnectionService', () => {
           { email: connB.email, providerAccountId: connB.providerAccountId },
         ],
       });
-      expect(prisma.connection.delete).not.toHaveBeenCalled();
+      expect(prisma.connection.deleteMany).not.toHaveBeenCalled();
       expect(fetchSpy).not.toHaveBeenCalled();
     });
 
@@ -654,7 +634,7 @@ describe('ConnectionService', () => {
 
       const result = await service.disconnect('chat123', 'SECOND@x.com');
 
-      expect(prisma.connection.delete).toHaveBeenCalledWith({
+      expect(prisma.connection.deleteMany).toHaveBeenCalledWith({
         where: { id: connB.id },
       });
       expect(result).toEqual({
@@ -676,19 +656,14 @@ describe('ConnectionService', () => {
       );
     });
 
-    it('treats a P2025 (already deleted) error as an idempotent success', async () => {
+    it('is idempotent when the connection was already deleted (deleteMany matches zero rows, never throws)', async () => {
       const conn = encryptedConnection();
       prisma.user.findUnique.mockResolvedValue({
         ...mockUser,
         connections: [conn],
       });
       fetchSpy.mockResolvedValue({ ok: true } as Response);
-      prisma.connection.delete.mockRejectedValue(
-        new Prisma.PrismaClientKnownRequestError('Record not found', {
-          code: 'P2025',
-          clientVersion: '7.9.1',
-        }),
-      );
+      prisma.connection.deleteMany.mockResolvedValue({ count: 0 });
 
       const result = await service.disconnect('chat123');
 
