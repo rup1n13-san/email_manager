@@ -86,11 +86,27 @@ export class GmailService {
     chatId: string,
     maxResults = 20,
   ): Promise<GmailResult<EmailSummary[]>> {
+    return this.listMessageSummaries(chatId, maxResults);
+  }
+
+  async searchEmails(
+    chatId: string,
+    query: string,
+    maxResults = 20,
+  ): Promise<GmailResult<EmailSummary[]>> {
+    return this.listMessageSummaries(chatId, maxResults, query);
+  }
+
+  private async listMessageSummaries(
+    chatId: string,
+    maxResults: number,
+    query?: string,
+  ): Promise<GmailResult<EmailSummary[]>> {
     const client = await this.getClient(chatId);
     if (client.status !== 'active') return client;
 
     try {
-      const ids = await this.collectMessageIds(client.gmail, maxResults);
+      const ids = await this.collectMessageIds(client.gmail, maxResults, query);
       const messages = await Promise.all(
         ids.map((id) => this.getMessageSummary(client.gmail, id)),
       );
@@ -103,6 +119,7 @@ export class GmailService {
   private async collectMessageIds(
     gmail: gmail_v1.Gmail,
     maxResults: number,
+    query?: string,
   ): Promise<string[]> {
     const ids: string[] = [];
     let pageToken: string | undefined;
@@ -111,6 +128,7 @@ export class GmailService {
         userId: 'me',
         maxResults: Math.min(maxResults - ids.length, 500),
         pageToken,
+        q: query,
       });
       for (const message of data.messages ?? []) {
         if (message.id) ids.push(message.id);
@@ -218,11 +236,6 @@ export class GmailService {
       };
     }
     return { status: kind };
-  }
-
-  searchEmails(query: string) {
-    this.logger.debug(`searchEmails called with query="${query}"`);
-    return { query };
   }
 
   sendEmail() {

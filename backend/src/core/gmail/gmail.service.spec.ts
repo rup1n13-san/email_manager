@@ -59,6 +59,11 @@ type GmailServiceInstance = {
     chatId: string,
     maxResults?: number,
   ): Promise<GmailResult<EmailSummary[]>>;
+  searchEmails(
+    chatId: string,
+    query: string,
+    maxResults?: number,
+  ): Promise<GmailResult<EmailSummary[]>>;
   getEmail(
     chatId: string,
     id: string,
@@ -434,6 +439,47 @@ describe('GmailService', () => {
       const result = await service.getEmail('chat-1', 'missing');
 
       expect(result).toEqual({ status: 'not_found' });
+    });
+  });
+
+  describe('searchEmails', () => {
+    function givenActiveConnection() {
+      mockConnectionService.getActiveTokens.mockResolvedValue({
+        status: 'active',
+        account,
+        tokens: {
+          accessToken: 'the-access-token',
+          refreshToken: 'the-refresh-token',
+          expiresAt: new Date(Date.now() + 3600_000),
+        },
+      });
+    }
+
+    it('forwards the query to messages.list verbatim, untouched by our own parsing', async () => {
+      givenActiveConnection();
+      mockMessagesList.mockResolvedValue({ data: { messages: [] } });
+
+      await service.searchEmails(
+        'chat-1',
+        'from:boss@x.com is:unread after:2025/01/01',
+      );
+
+      expect(mockMessagesList).toHaveBeenCalledWith(
+        expect.objectContaining({
+          q: 'from:boss@x.com is:unread after:2025/01/01',
+        }),
+      );
+    });
+
+    it('passes through a non-active client status untouched', async () => {
+      mockConnectionService.getActiveTokens.mockResolvedValue({
+        status: 'none',
+      });
+
+      const result = await service.searchEmails('chat-1', 'is:unread');
+
+      expect(result).toEqual({ status: 'none' });
+      expect(mockMessagesList).not.toHaveBeenCalled();
     });
   });
 });
