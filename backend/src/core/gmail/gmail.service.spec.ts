@@ -5,6 +5,13 @@ import { ConnectionService } from '../connection/connection.service.js';
 const mockSetCredentials = jest.fn<any>();
 const mockOn = jest.fn<any>();
 const mockGmailFactory = jest.fn<any>();
+const mockMessagesList = jest.fn<any>();
+const mockMessagesGet = jest.fn<any>();
+
+class MockGaxiosError extends Error {
+  status?: number;
+  response?: { data?: unknown };
+}
 
 jest.unstable_mockModule('googleapis', () => ({
   google: {
@@ -16,7 +23,26 @@ jest.unstable_mockModule('googleapis', () => ({
     },
     gmail: mockGmailFactory,
   },
+  Common: { GaxiosError: MockGaxiosError },
 }));
+
+type EmailSummary = {
+  id: string;
+  threadId: string;
+  subject: string;
+  from: string;
+  date: string;
+  snippet: string;
+};
+
+type GmailResult<T> =
+  | { status: 'ok'; data: T }
+  | { status: 'none' }
+  | { status: 'ambiguous'; accounts: unknown[] }
+  | { status: 'needs_reconnect' }
+  | { status: 'not_found' }
+  | { status: 'rate_limited' }
+  | { status: 'unknown'; message: string };
 
 type GmailServiceInstance = {
   getClient(
@@ -27,6 +53,10 @@ type GmailServiceInstance = {
     | { status: 'ambiguous'; accounts: unknown[] }
     | { status: 'needs_reconnect' }
   >;
+  listEmails(
+    chatId: string,
+    maxResults?: number,
+  ): Promise<GmailResult<EmailSummary[]>>;
 };
 
 describe('GmailService', () => {
@@ -41,7 +71,9 @@ describe('GmailService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    mockGmailFactory.mockReturnValue({ users: {} });
+    mockGmailFactory.mockReturnValue({
+      users: { messages: { list: mockMessagesList, get: mockMessagesGet } },
+    });
 
     const { GmailService } = await import('./gmail.service.js');
 
@@ -170,5 +202,104 @@ describe('GmailService', () => {
     tokensHandler({ refresh_token: 'rotated-refresh-token' });
 
     expect(mockConnectionService.updateAccessToken).not.toHaveBeenCalled();
+  });
+
+  describe('listEmails', () => {
+    function givenActiveConnection() {
+      mockConnectionService.getActiveTokens.mockResolvedValue({
+        status: 'active',
+        account,
+        tokens: {
+          accessToken: 'the-access-token',
+          refreshToken: 'the-refresh-token',
+          expiresAt: new Date(Date.now() + 3600_000),
+        },
+      });
+    }
+
+    function summaryFor(id: string, subject: string) {
+      return {
+        data: {
+          id,
+          threadId: `thread-${id}`,
+          snippet: `snippet-${id}`,
+          payload: {
+            headers: [
+              { name: 'Subject', value: subject },
+              { name: 'From', value: 'sender@example.com' },
+              { name: 'Date', value: 'Wed, 1 Jan 2025 00:00:00 +0000' },
+            ],
+          },
+        },
+      };
+    }
+
+    it('passes through a non-active client status untouched', async () => {
+      mockConnectionService.getActiveTokens.mockResolvedValue({
+        status: 'none',
+      });
+
+      const result = await service.listEmails('chat-1');
+
+      expect(result).toEqual({ status: 'none' });
+      expect(mockMessagesList).not.toHaveBeenCalled();
+    });
+
+    it('merges two pages of results in order', async () => {
+      givenActiveConnection();
+      mockMessagesList
+        .mockResolvedValueOnce({
+          data: { messages: [{ id: 'm1' }, { id: 'm2' }], nextPageToken: 'p2' },
+        })
+        .mockResolvedValueOnce({
+          data: { messages: [{ id: 'm3' }] },
+        });
+      mockMessagesGet
+        .mockResolvedValueOnce(summaryFor('m1', 'First'))
+        .mockResolvedValueOnce(summaryFor('m2', 'Second'))
+        .mockResolvedValueOnce(summaryFor('m3', 'Third'));
+
+      const result = await service.listEmails('chat-1', 20);
+
+      expect(mockMessagesList).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({
+        status: 'ok',
+        data: [
+          expect.objectContaining({ id: 'm1', subject: 'First' }),
+          expect.objectContaining({ id: 'm2', subject: 'Second' }),
+          expect.objectContaining({ id: 'm3', subject: 'Third' }),
+        ],
+      });
+    });
+
+    it('respects maxResults and does not fetch a further page once satisfied', async () => {
+      givenActiveConnection();
+      mockMessagesList.mockResolvedValueOnce({
+        data: { messages: [{ id: 'm1' }], nextPageToken: 'p2' },
+      });
+      mockMessagesGet.mockResolvedValueOnce(summaryFor('m1', 'Only'));
+
+      const result = await service.listEmails('chat-1', 1);
+
+      expect(mockMessagesList).toHaveBeenCalledTimes(1);
+      expect(mockMessagesList).toHaveBeenCalledWith(
+        expect.objectContaining({ maxResults: 1 }),
+      );
+      expect(result).toEqual({
+        status: 'ok',
+        data: [expect.objectContaining({ id: 'm1' })],
+      });
+    });
+
+    it('maps a rate-limit failure to a typed result instead of throwing', async () => {
+      givenActiveConnection();
+      const error = new MockGaxiosError('Too many requests');
+      error.status = 429;
+      mockMessagesList.mockRejectedValue(error);
+
+      const result = await service.listEmails('chat-1');
+
+      expect(result).toEqual({ status: 'rate_limited' });
+    });
   });
 });
