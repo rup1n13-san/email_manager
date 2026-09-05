@@ -31,9 +31,11 @@ function encodeAddressHeader(value: string): string {
 }
 
 export function buildRawEmail({ to, subject, body }: MimeMessageInput): string {
+  const safeTo = to.replace(/[\r\n]+/g, ' ').trim();
+  const safeSubject = subject.replace(/[\r\n]+/g, ' ').trim();
   const headers = [
-    `To: ${encodeAddressHeader(to)}`,
-    `Subject: ${encodeMimeHeaderValue(subject)}`,
+    `To: ${encodeAddressHeader(safeTo)}`,
+    `Subject: ${encodeMimeHeaderValue(safeSubject)}`,
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset="UTF-8"',
     'Content-Transfer-Encoding: 8bit',
