@@ -26,7 +26,7 @@ async function main() {
   const [, , chatId, toEmail] = process.argv;
   if (!chatId || !toEmail) {
     console.error(
-      'Usage: npx tsx scripts/test-gmail-service.ts <chatId> <yourOwnEmail>',
+      'Usage: npm run gmail:manual-test -- <chatId> <yourOwnEmail>',
     );
     process.exitCode = 1;
     return;
