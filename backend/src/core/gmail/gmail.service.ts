@@ -183,8 +183,12 @@ export class GmailService {
   ): Promise<EmailSummary[]> {
     const ids = await this.collectMessageIds(gmail, maxResults, query);
     const summaries: EmailSummary[] = [];
-    for (const id of ids) summaries.push(await this.getMessageSummary(gmail, id));
+    for (const id of ids) {
+      summaries.push(await this.getMessageSummary(gmail, id));
+    }
+
     return summaries;
+  }
 
   private async collectMessageIds(
     gmail: gmail_v1.Gmail,
