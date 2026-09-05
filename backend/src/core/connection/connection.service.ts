@@ -143,6 +143,22 @@ export class ConnectionService {
     };
   }
 
+  async updateAccessToken(
+    connectionId: string,
+    accessToken: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    // updateMany over update: a row already deleted by a concurrent
+    // /disconnect matches zero rows instead of throwing P2025.
+    await this.prisma.connection.updateMany({
+      where: { id: connectionId },
+      data: {
+        accessToken: this.encryption.encrypt(accessToken),
+        expiresAt,
+      },
+    });
+  }
+
   async listConnections(
     chatId: string,
   ): Promise<{ email: string; providerAccountId: string }[]> {
@@ -279,16 +295,9 @@ export class ConnectionService {
     const accessToken = this.encryption.decrypt(target.accessToken);
     const revoked = await revokeGoogleToken(refreshToken ?? accessToken);
 
-    try {
-      await this.prisma.connection.delete({ where: { id: target.id } });
-    } catch (error) {
-      if (!(
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2025'
-      )) {
-        throw error;
-      }
-    }
+    // deleteMany over delete: a row already deleted by a concurrent
+    // /disconnect matches zero rows instead of throwing P2025.
+    await this.prisma.connection.deleteMany({ where: { id: target.id } });
     this.logger.log(
       `Disconnected connection id=${target.id} chat=${chatId} revoked=${revoked}`,
     );
@@ -387,9 +396,6 @@ export class ConnectionService {
     }
   }
 
-  // Safe to revoke unconditionally: the unique constraint on
-  // [userId, provider, providerAccountId] guarantees no other row
-  // (pending or confirmed) can share this account's tokens.
   private async revokePendingTokens(connection: {
     accessToken: string;
     refreshToken: string | null;
