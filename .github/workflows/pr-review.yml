@@ -69,6 +69,7 @@ jobs:
       - name: Send Telegram Notification
         if: always()
         uses: appleboy/telegram-action@master
+        continue-on-error: true
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
