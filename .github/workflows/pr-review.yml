@@ -3,6 +3,9 @@ name: PR Review with Progress Tracking
 on:
   pull_request_target:
     types: [opened, synchronize, ready_for_review, reopened]
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   review-with-tracking:
